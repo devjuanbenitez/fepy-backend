@@ -59,6 +59,11 @@ const empresaSchema = new mongoose.Schema({
       type: String,
       enum: ['test', 'produccion'],
       default: 'test'
+    },
+    // URL del logo de la empresa para KUDE
+    urlLogo: {
+      type: String,
+      default: 'https://lrtv.jaranetwork.com/sites/default/files/styles/poster/public/logos/hit.png?itok=UHWpjKPdd'
     }
   },
   

@@ -15,13 +15,17 @@ const { normalizarFechasEnObjeto, normalizarDatetime } = require('../utils/fecha
 router.use(verificarToken);
 
 // Generar hash para detectar duplicados
+// Soporta estructura plana y estructura param/data
 function generarFacturaHash(datosFactura) {
   const crypto = require('crypto');
-  const ruc = datosFactura.ruc?.replace(/[^0-9]/g, '') || '';
-  const numero = datosFactura.numero || '';
-  // Normalizar fecha para evitar errores con microsegundos de ERPNext
-  const fecha = normalizarDatetime(datosFactura.fecha);
-  const cadena = `${ruc}|${numero}|${fecha}`;
+
+  // Soportar ambas estructuras: param/data y plana
+  const ruc = datosFactura.param?.ruc || datosFactura.ruc?.replace(/[^0-9]/g, '') || '';
+  const establecimiento = datosFactura.data?.establecimiento || datosFactura.establecimiento || '001';
+  const numero = datosFactura.data?.numero || datosFactura.numero || '';
+
+  // Hash único por RUC + Establecimiento + Número
+  const cadena = `${ruc}|${establecimiento}|${numero}`;
   return crypto.createHash('sha256').update(cadena).digest('hex');
 }
 
@@ -48,21 +52,24 @@ router.post('/crear', async (req, res) => {
     // ========================================
     // ERPNext envía fechas con microsegundos (ej: 2026-02-24T15:12:58.715809)
     // JavaScript espera milisegundos (ej: 2026-02-24T15:12:58.715Z)
+    // Usamos datosFactura.data para la estructura unificada
+    const data = datosFactura.data || datosFactura;
     console.log('📅 Normalizando fechas de ERPNext...');
-    console.log('  Fecha original:', datosFactura.fecha);
-    datosFactura = normalizarFechasEnObjeto(datosFactura);
-    console.log('  Fecha normalizada:', datosFactura.fecha);
+    console.log('  Fecha original:', data.fecha);
+    normalizarFechasEnObjeto(data);
+    console.log('  Fecha normalizada:', data.fecha);
 
     // ========================================
     // BUSCAR EMPRESA POR RUC
     // ========================================
-    const rucEmpresa = datosFactura.ruc?.trim();
+    // El RUC puede estar en param.ruc (estructura nueva) o en ruc (estructura vieja)
+    const rucEmpresa = datosFactura.param?.ruc || datosFactura.ruc?.trim();
 
     if (!rucEmpresa) {
       return res.status(400).json({
         success: false,
         error: 'RUC de empresa requerido',
-        mensaje: 'El campo "ruc" es requerido para identificar la empresa emisora'
+        mensaje: 'El campo "param.ruc" es requerido para identificar la empresa emisora'
       });
     }
 
@@ -135,24 +142,28 @@ router.post('/crear', async (req, res) => {
     // CREAR REGISTRO EN BD (ESTADO: ENCOLADO)
     // ========================================
     // Formato SIFEN: 001-001-0000003 (establecimiento-punto-numero)
-    const correlativoCompleto = `${String(datosFactura.establecimiento || '001').padStart(3, '0')}-${String(datosFactura.punto || '001').padStart(3, '0')}-${String(datosFactura.numero || '0000001').padStart(7, '0')}`;
+    const correlativoCompleto = `${String(datosFactura.data?.establecimiento || datosFactura.establecimiento || '001').padStart(3, '0')}-${String(datosFactura.data?.punto || datosFactura.punto || '001').padStart(3, '0')}-${String(datosFactura.data?.numero || datosFactura.numero || '0000001').padStart(7, '0')}`;
 
-    const totalFactura = datosFactura.total ||
-                         datosFactura.totalPago ||
-                         (datosFactura.items?.reduce((sum, item) => sum + (item.precioTotal || item.precioUnitario * item.cantidad || 0), 0) || 0);
+    const totalFactura = datosFactura.data?.totalPago || datosFactura.data?.total || datosFactura.totalPago || datosFactura.total ||
+                         (datosFactura.data?.items?.reduce((sum, item) => sum + (item.precioTotal || item.precioUnitario * item.cantidad || 0), 0) || 0);
+
+    // Obtener datos del cliente (soportar ambas estructuras: param/data y plana)
+    const cliente = datosFactura.data?.cliente || datosFactura.cliente || {};
 
     const invoice = new Invoice({
+      empresaId: empresa._id,
+      rucEmpresa: empresa.ruc,
       correlativo: correlativoCompleto,
       cliente: {
-        ruc: datosFactura.cliente?.ruc || datosFactura.cliente?.documentoNumero || 'N/A',
-        nombre: datosFactura.cliente?.razonSocial || datosFactura.cliente?.nombreFantasia || datosFactura.cliente?.nombre || 'N/A',
-        razonSocial: datosFactura.cliente?.razonSocial,
-        nombreFantasia: datosFactura.cliente?.nombreFantasia,
-        direccion: datosFactura.cliente?.direccion,
-        telefono: datosFactura.cliente?.telefono,
-        email: datosFactura.cliente?.email,
-        documentoTipo: datosFactura.cliente?.documentoTipo,
-        documentoNumero: datosFactura.cliente?.documentoNumero
+        ruc: cliente.ruc || cliente.documentoNumero || 'N/A',
+        nombre: cliente.razonSocial || cliente.nombreFantasia || cliente.nombre || 'N/A',
+        razonSocial: cliente.razonSocial,
+        nombreFantasia: cliente.nombreFantasia,
+        direccion: cliente.direccion,
+        telefono: cliente.telefono,
+        email: cliente.email,
+        documentoTipo: cliente.documentoTipo,
+        documentoNumero: cliente.documentoNumero
       },
       total: totalFactura,
       fechaCreacion: new Date(),

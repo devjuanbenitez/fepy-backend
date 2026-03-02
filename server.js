@@ -29,6 +29,9 @@ if (process.env.MOCK_DEBUG === 'true') {
 const Invoice = require('./models/Invoice');
 const OperationLog = require('./models/OperationLog');
 
+// Importar utilitarios SIFEN
+const { determinarEstadoSegunCodigo, determinarEstadoVisual } = require('./utils/estadoSifen');
+
 // Configurar Express
 const app = express();
 
@@ -462,6 +465,118 @@ app.get('/api/queue/stats', async (req, res) => {
   }
 });
 
+// ENDPOINT: JOBS RECIENTES DE LA COLA
+// ========================================
+app.get('/api/queue/jobs', async (req, res) => {
+  try {
+    const { limit = 20 } = req.query;
+    const { getRecentJobs } = require('./queues/facturaQueue');
+    const jobs = await getRecentJobs(parseInt(limit));
+
+    res.json({
+      success: true,
+      data: jobs
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ENDPOINT: LIMPIAR JOBS COMPLETADOS
+// ========================================
+app.post('/api/queue/clear', async (req, res) => {
+  try {
+    const { queue = 'facturacion', keep = 0 } = req.body;
+    const { facturaQueue, kudeQueue, cleanCompletedJobs } = require('./queues/facturaQueue');
+
+    const targetQueue = queue === 'kude' ? kudeQueue : facturaQueue;
+    const removed = await cleanCompletedJobs(targetQueue, keep);
+
+    res.json({
+      success: true,
+      message: `Se eliminaron ${removed} jobs completados de la cola ${queue}`,
+      data: { removed, queue, keep }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ENDPOINT: LIMPIAR JOBS FALLIDOS
+// ========================================
+app.post('/api/queue/clear-failed', async (req, res) => {
+  try {
+    const { queue = 'facturacion' } = req.body;
+    const { facturaQueue, kudeQueue, cleanFailedJobs } = require('./queues/facturaQueue');
+
+    const targetQueue = queue === 'kude' ? kudeQueue : facturaQueue;
+    const removed = await cleanFailedJobs(targetQueue);
+
+    res.json({
+      success: true,
+      message: `Se eliminaron ${removed} jobs fallidos de la cola ${queue}`,
+      data: { removed, queue }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ENDPOINT: LIMPIAR TODOS LOS JOBS
+// ========================================
+app.post('/api/queue/clear-all', async (req, res) => {
+  try {
+    const { queue = 'facturacion' } = req.body;
+    const { facturaQueue, kudeQueue, cleanAllJobs } = require('./queues/facturaQueue');
+
+    const targetQueue = queue === 'kude' ? kudeQueue : facturaQueue;
+    const removed = await cleanAllJobs(targetQueue);
+
+    res.json({
+      success: true,
+      message: `Se eliminaron ${removed} jobs de la cola ${queue}`,
+      data: { removed, queue }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ENDPOINT: LIMPIAR JOBS COMPLETADOS (alias)
+// ========================================
+app.post('/api/queue/clear-completed', async (req, res) => {
+  try {
+    const { queue = 'facturacion', keep = 0 } = req.body;
+    const { facturaQueue, kudeQueue, cleanCompletedJobs } = require('./queues/facturaQueue');
+
+    const targetQueue = queue === 'kude' ? kudeQueue : facturaQueue;
+    const removed = await cleanCompletedJobs(targetQueue, keep);
+
+    res.json({
+      success: true,
+      message: `Se eliminaron ${removed} jobs completados de la cola ${queue}`,
+      data: { removed, queue, keep }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Endpoint para obtener logs de operaciones
 app.get('/api/logs', async (req, res) => {
   try {
@@ -519,6 +634,35 @@ app.get('/api/logs', async (req, res) => {
   }
 });
 
+// Endpoint para limpiar registros de logs
+app.delete('/api/logs/clear', async (req, res) => {
+  try {
+    const { tipo } = req.query; // 'all', 'error', 'success', 'warning'
+    
+    let filtro = {};
+    if (tipo && tipo !== 'all') {
+      filtro.estado = tipo;
+    }
+    
+    const result = await OperationLog.deleteMany(filtro);
+    
+    console.log(`🗑️ Logs eliminados: ${result.deletedCount} registros (filtro: ${tipo || 'todos'})`);
+    
+    res.status(200).json({
+      success: true,
+      message: `Se eliminaron ${result.deletedCount} registros de logs`,
+      deletedCount: result.deletedCount
+    });
+  } catch (error) {
+    console.error('Error al limpiar logs:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Error al limpiar logs',
+      message: error.message 
+    });
+  }
+});
+
 // Endpoint para verificar el estado actual de una factura (incluyendo cambios de estado)
 app.get('/api/invoices/estado/:cdc', async (req, res) => {
   try {
@@ -541,42 +685,84 @@ app.get('/api/invoices/estado/:cdc', async (req, res) => {
       return;
     }
 
-    // Verificar si el estado ha cambiado consultando al Mock SET
+    // Verificar si el estado ha cambiado consultando a la SET
     let estadoActual = invoiceRecord.estadoSifen;
-    let estadoMockSet = null;
+    let estadoSET = null;
 
     try {
-      // Consultar al Mock SET para ver el estado actual del documento
+      // Consultar a la SET para ver el estado actual del documento
       const idConsulta = crypto.randomBytes(16).toString('hex');
       const ambiente = "test";
       const certificateP12Path = path.join(__dirname, '../certificados', 'p12', 'certificado.p12');
       const certificatePassword = '123456';
 
       const respuesta = await setApi.consulta(idConsulta, cdc, ambiente, certificateP12Path, certificatePassword);
-      
-      // Extraer estado de la respuesta
+
+      // Extraer campos de la respuesta SOAP
+      const codigoRetornoMatch = respuesta.match(/<dCodRes>(.*?)<\/dCodRes>/);
       const estadoMatch = respuesta.match(/<estado>(.*?)<\/estado>/);
-      if (estadoMatch && estadoMatch[1]) {
-        estadoMockSet = estadoMatch[1].trim();
-      }
       
-      // Si el estado en Mock SET es diferente, actualizar en BD
-      if (estadoMockSet && estadoMockSet !== invoiceRecord.estadoSifen) {
-        invoiceRecord.estadoSifen = estadoMockSet;
-        await invoiceRecord.save();
-        console.log(`🔄 Estado actualizado para CDC ${cdc}: ${invoiceRecord.estadoSifen}`);
+      let codigoRetorno = null;
+      let estadoSET = null;
+      
+      if (codigoRetornoMatch && codigoRetornoMatch[1]) {
+        codigoRetorno = codigoRetornoMatch[1].trim();
+      }
+      if (estadoMatch && estadoMatch[1]) {
+        estadoSET = estadoMatch[1].trim();
+      }
+
+      console.log(`📥 Consulta SET - CDC: ${cdc}, dCodRes: ${codigoRetorno}, estado: ${estadoSET}`);
+
+      // Si hay respuesta de la SET, actualizar estado y estadoVisual
+      if (codigoRetorno && estadoSET) {
+        let nuevoEstadoSifen = invoiceRecord.estadoSifen;
+        let nuevoEstadoVisual = invoiceRecord.estadoVisual;
+
+        // Determinar estado según respuesta de consulta
+        if (codigoRetorno === '0421') {
+          // CDC encontrado - el estado real está en <estado>
+          if (estadoSET === 'Aprobado' || estadoSET === 'aprobado') {
+            nuevoEstadoSifen = 'aceptado';
+            nuevoEstadoVisual = 'aceptado';
+          } else if (estadoSET === 'Rechazado' || estadoSET === 'rechazado') {
+            nuevoEstadoSifen = 'rechazado';
+            nuevoEstadoVisual = 'rechazado';
+          } else {
+            // Pendiente
+            nuevoEstadoSifen = 'procesando';
+            nuevoEstadoVisual = 'observado';
+          }
+        } else if (codigoRetorno === '0420') {
+          // CDC inexistente
+          nuevoEstadoSifen = 'rechazado';
+          nuevoEstadoVisual = 'rechazado';
+        } else if (codigoRetorno === '1005') {
+          // Transmisión extemporánea - ÚNICO CASO donde estado = 'observado'
+          nuevoEstadoSifen = 'observado';
+          nuevoEstadoVisual = 'observado';
+        }
+
+        // Actualizar si hubo cambios
+        if (nuevoEstadoSifen !== invoiceRecord.estadoSifen || nuevoEstadoVisual !== invoiceRecord.estadoVisual) {
+          invoiceRecord.estadoSifen = nuevoEstadoSifen;
+          invoiceRecord.estadoVisual = nuevoEstadoVisual;
+          invoiceRecord.codigoRetorno = codigoRetorno;
+          await invoiceRecord.save();
+          console.log(`🔄 Estado actualizado para CDC ${cdc}: ${nuevoEstadoSifen} / ${nuevoEstadoVisual}`);
+        }
       }
     } catch (error) {
-      // Si no se puede consultar al Mock SET, usar el estado local
-      console.log('⚠️ No se pudo consultar el estado al Mock SET, usando estado local');
+      // Si no se puede consultar a la SET, usar el estado local
+      console.log('⚠️ No se pudo consultar el estado a la SET, usando estado local');
     }
 
     res.status(200).json({
       encontrado: true,
       cdc: cdc,
       estadoLocal: invoiceRecord.estadoSifen,
-      estadoMockSet: estadoMockSet,
-      estadoActualizado: estadoMockSet !== invoiceRecord.estadoSifen,
+      estadoSET: estadoSET,
+      estadoActualizado: estadoSET !== invoiceRecord.estadoSifen,
       datos: {
         correlativo: invoiceRecord.correlativo,
         codigoRetorno: invoiceRecord.codigoRetorno,
@@ -655,7 +841,7 @@ app.delete('/api/invoices/:id', async (req, res) => {
   }
 });
 
-// Endpoint para consultar y actualizar el estado desde el Mock-SET
+// Endpoint para consultar y actualizar el estado desde la SET
 app.post('/api/invoices/:id/refresh-status', async (req, res) => {
   try {
     const { id } = req.params;
@@ -683,104 +869,271 @@ app.post('/api/invoices/:id/refresh-status', async (req, res) => {
     
     console.log(`📋 CDC encontrado: ${invoiceRecord.cdc}, Estado actual: ${invoiceRecord.estadoSifen}`);
     
-    // Consultar al Mock-SET para obtener el estado actual
+    // Consultar a la SET para obtener el estado actual
     try {
       const idConsulta = crypto.randomBytes(16).toString('hex');
       const ambiente = "test";
       const certificateP12Path = path.join(__dirname, '../certificados', 'p12', 'certificado.p12');
       const certificatePassword = '123456';
 
-      console.log('📤 Enviando consulta al Mock-SET...');
+      console.log('📤 Enviando consulta a la SET...');
 
       const respuesta = await setApi.consulta(idConsulta, invoiceRecord.cdc, ambiente, certificateP12Path, certificatePassword);
-      
-      console.log('📥 Respuesta recibida del Mock-SET');
+
+      console.log('📥 Respuesta recibida de la SET');
       console.log('Respuesta:', respuesta.substring(0, 500));
+
+      // Extraer campos de la respuesta SOAP según Manual Técnico v150
+      // Estructura: <rProtDe><dCodRes>...</dCodRes><dEstRes>...</dEstRes><dMsgRes>...</dMsgRes>...</rProtDe>
+      // También soportamos los nombres genéricos que devuelve el mock-set
+      const codigoRetornoMatch = 
+        respuesta.match(/<dCodRes>(.*?)<\/dCodRes>/) ||
+        respuesta.match(/<codigoRetorno>(.*?)<\/codigoRetorno>/);
       
-      // Extraer estado de la respuesta SOAP
-      const estadoMatch = respuesta.match(/<estado>(.*?)<\/estado>/);
-      const codigoRetornoMatch = respuesta.match(/<codigoRetorno>(.*?)<\/codigoRetorno>/);
-      const mensajeRetornoMatch = respuesta.match(/<mensajeRetorno>(.*?)<\/mensajeRetorno>/);
+      const estadoRetornoMatch = 
+        respuesta.match(/<dEstRes>(.*?)<\/dEstRes>/) ||
+        respuesta.match(/<estadoResultado>(.*?)<\/estadoResultado>/) ||
+        respuesta.match(/<estado>(.*?)<\/estado>/);
       
+      const mensajeRetornoMatch = 
+        respuesta.match(/<dMsgRes>(.*?)<\/dMsgRes>/) ||
+        respuesta.match(/<mensajeRetorno>(.*?)<\/mensajeRetorno>/);
+      
+      const fechaProcesoMatch = 
+        respuesta.match(/<dFecProc>(.*?)<\/dFecProc>/) ||
+        respuesta.match(/<fechaProceso>(.*?)<\/fechaProceso>/);
+      
+      const digestValueMatch = 
+        respuesta.match(/<dDigVal>(.*?)<\/dDigVal>/) ||
+        respuesta.match(/<digestValue>(.*?)<\/digestValue>/);
+
       console.log('🔍 Extrayendo datos de la respuesta...');
-      console.log('  estadoMatch:', estadoMatch);
       console.log('  codigoRetornoMatch:', codigoRetornoMatch);
+      console.log('  estadoRetornoMatch:', estadoRetornoMatch);
       console.log('  mensajeRetornoMatch:', mensajeRetornoMatch);
-      
-      let nuevoEstado = invoiceRecord.estadoSifen;
+
       let codigoRetorno = invoiceRecord.codigoRetorno;
+      let estadoRetorno = invoiceRecord.respuestaSifen?.estado;
       let mensajeRetorno = invoiceRecord.mensajeRetorno;
-      
-      if (estadoMatch && estadoMatch[1]) {
-        nuevoEstado = estadoMatch[1].trim();
-        console.log('  Estado extraído del XML:', nuevoEstado);
-      }
-      
+      let fechaProceso = invoiceRecord.fechaProceso;
+      let digestValueResp = invoiceRecord.digestValue;
+
       if (codigoRetornoMatch && codigoRetornoMatch[1]) {
         codigoRetorno = codigoRetornoMatch[1].trim();
         console.log('  Código de retorno extraído:', codigoRetorno);
       }
-      
+
+      if (estadoRetornoMatch && estadoRetornoMatch[1]) {
+        estadoRetorno = estadoRetornoMatch[1].trim();
+        console.log('  Estado de retorno extraído:', estadoRetorno);
+      }
+
       if (mensajeRetornoMatch && mensajeRetornoMatch[1]) {
         mensajeRetorno = mensajeRetornoMatch[1].trim();
         console.log('  Mensaje extraído:', mensajeRetorno);
       }
-      
-      // Determinar el estado basado en el código de retorno
-      const estadoDeterminado = determinarEstadoSegunCodigoRetorno(codigoRetorno, null, mensajeRetorno);
-      console.log('  Estado determinado:', estadoDeterminado, '(desde código:', codigoRetorno + ')');
-      
-      // Usar el estado determinado si es más específico que el extraído directamente
-      if (estadoDeterminado !== 'enviado') {
-        nuevoEstado = estadoDeterminado;
+
+      if (fechaProcesoMatch && fechaProcesoMatch[1]) {
+        fechaProceso = fechaProcesoMatch[1].trim();
+        console.log('  Fecha de proceso extraída:', fechaProceso);
       }
-      
-      console.log('  Nuevo estado final:', nuevoEstado);
+
+      if (digestValueMatch && digestValueMatch[1]) {
+        digestValueResp = digestValueMatch[1].trim();
+        console.log('  DigestValue extraído:', digestValueResp);
+      }
+
+      // Determinar estado visual según código de retorno y estado del documento
+      // Para consulta (consDE):
+      // - dCodRes 0421 = CDC encontrado (éxito de la consulta)
+      // - estado = Aprobado/Rechazado/Pendiente (estado real del documento)
+      //
+      // Para recepción (siRecepDE):
+      // - 0260 = Autorización satisfactoria (Aprobado) 🟢
+      // - 1005 = Transmisión extemporánea (Observado) 🟠
+      // - 0000 = En procesamiento (Pendiente) 🟠
+      // - 1000-1004 = Errores de validación (Rechazado) 🔴
+      //
+      // NOTA: El estado "observado" solo se usa para código 1005.
+      // Para código 0000, el estado es "enviado" pero estadoVisual es "observado" (amber).
+      let estadoVisual = 'rechazado';
+      let estadoSifen = 'rechazado';
+
+      // Primero verificar si es una respuesta de recepción (tiene dEstRes o estadoResultado)
+      // vs una respuesta de consulta (tiene <estado> con Aprobado/Rechazado/Pendiente)
+      const esConsulta = estadoRetornoMatch &&
+        (estadoRetornoMatch[0].includes('<estado>') || estadoRetornoMatch[0].includes('<estadoResultado>'));
+
+      if (codigoRetorno === '0260') {
+        // Recepción: Autorización satisfactoria
+        estadoVisual = 'aceptado';
+        estadoSifen = 'aceptado';
+      } else if (codigoRetorno === '1005') {
+        // Recepción: Transmisión extemporánea - ÚNICO CASO donde estado = 'observado'
+        estadoVisual = 'observado';
+        estadoSifen = 'observado';
+      } else if (codigoRetorno === '0000') {
+        // Recepción: En procesamiento (pendiente de aprobación manual)
+        estadoVisual = 'observado';  // Amber
+        estadoSifen = 'enviado';
+      } else if (codigoRetorno === '0421') {
+        // Consulta: CDC encontrado - el estado real está en <estado>
+        if (estadoRetorno === 'Aprobado' || estadoRetorno === 'aprobado') {
+          estadoVisual = 'aceptado';
+          estadoSifen = 'aceptado';
+        } else if (estadoRetorno === 'Rechazado' || estadoRetorno === 'rechazado') {
+          estadoVisual = 'rechazado';
+          estadoSifen = 'rechazado';
+        } else {
+          // Pendiente o cualquier otro valor
+          estadoVisual = 'observado';
+          estadoSifen = 'procesando';
+        }
+      } else if (['0', '2'].includes(codigoRetorno)) {
+        // Códigos legacy de éxito
+        estadoVisual = 'aceptado';
+        estadoSifen = 'aceptado';
+      }
+
+      console.log('  Estado visual:', estadoVisual, '(desde código:', codigoRetorno + ')');
+      console.log('  Estado SIFEN:', estadoSifen);
       
       // Verificar si el estado cambió
-      const estadoCambio = nuevoEstado !== invoiceRecord.estadoSifen;
-      
-      // Actualizar en la base de datos si hubo cambios
-      if (estadoCambio) {
-        invoiceRecord.estadoSifen = nuevoEstado;
+      const estadoCambio = estadoSifen !== invoiceRecord.estadoSifen;
+
+      // Actualizar en la base de datos si hubo cambios o si es la primera respuesta
+      if (estadoCambio || !invoiceRecord.respuestaSifen?.codigo) {
+        invoiceRecord.estadoSifen = estadoSifen;
+        invoiceRecord.estadoVisual = estadoVisual;
         invoiceRecord.codigoRetorno = codigoRetorno;
         invoiceRecord.mensajeRetorno = mensajeRetorno;
+        invoiceRecord.fechaProceso = fechaProceso;
         
+        // Guardar respuesta completa SIFEN v150
+        invoiceRecord.respuestaSifen = {
+          codigo: codigoRetorno,
+          estado: estadoRetorno,
+          mensaje: mensajeRetorno,
+          fechaProceso: fechaProceso,
+          digestValue: digestValueResp
+        };
+
+        // Determinar el tipo de operación y estado del log según el resultado
+        let tipoOperacion = 'actualizacion_estado';
+        let logEstado = 'success';
+        let descripcion = `Estado actualizado a ${estadoSifen}`;
+        
+        // Si el estado es rechazado o inexistente, registrar como error
+        if (estadoVisual === 'rechazado') {
+          tipoOperacion = 'error_respuesta_set';
+          logEstado = 'error';
+          descripcion = `Factura rechazada por SET: ${mensajeRetorno || codigoRetorno}`;
+          
+          if (codigoRetorno === '0420') {
+            descripcion = `CDC inexistente en SET - La factura no fue encontrada en la base de datos de la SET`;
+          }
+        } else if (estadoVisual === 'observado') {
+          tipoOperacion = 'actualizacion_estado';
+          logEstado = 'warning';
+          descripcion = `Factura aceptada con observación: ${mensajeRetorno || 'Transmisión extemporánea'}`;
+        } else if (estadoVisual === 'aceptado') {
+          descripcion = `Factura aceptada por SET: ${mensajeRetorno || 'Autorización satisfactoria'}`;
+        }
+
         // Registrar el cambio de estado
         const log = new OperationLog({
           invoiceId: id,
-          tipoOperacion: 'actualizacion_estado',
-          descripcion: `Estado actualizado de ${invoiceRecord.estadoSifen} a ${nuevoEstado}`,
+          tipoOperacion: tipoOperacion,
+          descripcion: descripcion,
           estadoAnterior: invoiceRecord.estadoSifen,
-          estadoNuevo: nuevoEstado,
-          fecha: new Date()
+          estadoNuevo: estadoSifen,
+          estado: logEstado,
+          fecha: new Date(),
+          detalle: {
+            cdc: invoiceRecord.cdc,
+            correlativo: invoiceRecord.correlativo,
+            codigoRetorno: codigoRetorno,
+            estadoRetorno: estadoRetorno,
+            mensajeRetorno: mensajeRetorno,
+            estadoVisual: estadoVisual,
+            huboCambio: estadoCambio
+          }
         });
         await log.save();
-        
+
         await invoiceRecord.save();
-        
-        console.log(`✅ Estado actualizado para factura ${id}: ${invoiceRecord.estadoSifen} → ${nuevoEstado}`);
+
+        if (logEstado === 'error') {
+          console.log(`❌ Factura rechazada para factura ${id}: ${descripcion}`);
+        } else if (logEstado === 'warning') {
+          console.log(`⚠️ Factura observada para factura ${id}: ${descripcion}`);
+        } else {
+          console.log(`✅ Estado actualizado para factura ${id}: ${invoiceRecord.estadoSifen} → ${estadoSifen}`);
+        }
       } else {
-        console.log(`ℹ️ Estado sin cambios: ${nuevoEstado}`);
+        console.log(`ℹ️ Estado sin cambios: ${estadoSifen}`);
+
+        // Registrar la consulta de estado aunque no haya cambios
+        const log = new OperationLog({
+          invoiceId: id,
+          tipoOperacion: 'consulta_estado',
+          descripcion: `Consulta de estado realizada - Estado actual: ${estadoSifen}`,
+          estado: 'success',
+          fecha: new Date(),
+          detalle: {
+            cdc: invoiceRecord.cdc,
+            correlativo: invoiceRecord.correlativo,
+            codigoRetorno: codigoRetorno,
+            estadoRetorno: estadoRetorno,
+            mensajeRetorno: mensajeRetorno,
+            estadoVisual: estadoVisual,
+            huboCambio: false
+          }
+        });
+        await log.save();
       }
-      
+
       res.status(200).json({
         success: true,
         message: estadoCambio ? 'Estado actualizado' : 'Estado sin cambios',
         estadoAnterior: invoiceRecord.estadoSifen,
-        estadoActual: nuevoEstado,
+        estadoActual: estadoSifen,
+        estadoVisual: estadoVisual,
         estadoCambio: estadoCambio,
         codigoRetorno: codigoRetorno,
-        mensajeRetorno: mensajeRetorno
+        mensajeRetorno: mensajeRetorno,
+        respuestaSifen: invoiceRecord.respuestaSifen
       });
       
     } catch (error) {
-      console.error('❌ Error consultando al Mock-SET:', error);
+      console.error('❌ Error consultando a la SET:', error);
       console.error('Stack trace:', error.stack);
+      
+      // Registrar el error en los logs de operación
+      const log = new OperationLog({
+        invoiceId: id,
+        tipoOperacion: 'error_consulta_estado',
+        descripcion: `Error al consultar estado en SET: ${error.message}`,
+        estado: 'error',
+        fecha: new Date(),
+        detalle: {
+          error: error.message,
+          stack: error.stack
+        }
+      });
+      await log.save();
+      
+      // Actualizar el estado de la factura a error si no estaba ya en error
+      if (invoiceRecord.estadoSifen !== 'error') {
+        invoiceRecord.estadoSifen = 'error';
+        await invoiceRecord.save();
+      }
+      
       res.status(500).json({
         success: false,
-        error: 'Error al consultar el estado en Mock-SET',
-        message: error.message
+        error: 'Error al consultar el estado en SET',
+        message: error.message,
+        estadoActual: 'error'
       });
     }
   } catch (error) {

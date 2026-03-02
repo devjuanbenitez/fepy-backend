@@ -11,7 +11,16 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const os = require('os');
-const { normalizarDatetime, formatoFechaSIFEN, convertirFechasASIFEN } = require('../utils/fechaUtils');
+const { formatoFechaSIFEN, convertirFechasASIFEN } = require('../utils/fechaUtils');
+const {
+  extraerCodigoRetorno,
+  extraerMensajeRetorno,
+  extraerEstadoResultado,
+  extraerFechaProceso,
+  extraerDigestValue,
+  determinarEstadoSegunCodigo,
+  determinarEstadoVisual
+} = require('../utils/estadoSifen');
 
 // Librerías SIFEN
 const FacturaElectronicaPY = require('facturacionelectronicapy-xmlgen').default;
@@ -25,14 +34,19 @@ const setApi = require('../../mock-set/setapi-mock').default;
  * @param {Object} datosFactura - Datos de la factura
  * @param {String} empresaId - ID de la empresa
  * @param {Object} job - Job de Bull (para reportar progreso)
+ * @param {String} invoiceId - ID de la factura en BD (para actualizar con DigestValue)
  * @returns {Object} Resultado del procesamiento
  */
-async function procesarFactura(datosFactura, empresaId, job = null) {
+async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = null) {
   const reportarProgreso = async (progress) => {
     if (job && job.progress) {
       await job.progress(progress);
     }
   };
+
+  // Variables para almacenar CDC y DigestValue (extraídos después de firmar)
+  let digestValueFirma = null;
+  let cdcFirma = null;
 
   try {
     // ========================================
@@ -60,56 +74,60 @@ async function procesarFactura(datosFactura, empresaId, job = null) {
     // ========================================
     // 2. Completar datos con configuración de empresa
     // ========================================
-    const datosCompletos = completarDatosConEmpresa(datosFactura, empresa);
+    const data = datosFactura.data || datosFactura;
+    const datosCompletos = completarDatosConEmpresa(data, empresa);
     await reportarProgreso(15);
 
     // ========================================
-    // 3. Generar CDC (Código de Control)
+    // 3. Generar params para xmlgen (usando estructura unificada param/data)
     // ========================================
-    const cdcGenerado = generarCDC(datosCompletos);
-    console.log(`🔢 CDC generado: ${cdcGenerado}`);
-    datosCompletos.cdc = cdcGenerado;
-    await reportarProgreso(20);
+    // NOTA: El CDC se genera automáticamente dentro de generateXMLDE()
+    const param = datosFactura.param || {};
+    const timbrado = param.timbradoNumero || datosCompletos.timbrado || empresa.configuracionSifen.timbrado || '12558946';
+    const establecimiento = datosCompletos.establecimiento || '001';
 
-    // ========================================
-    // 4. Generar params para xmlgen
-    // ========================================
-    const timbrado = datosCompletos.timbrado || empresa.configuracionSifen.timbrado || '12345678';
-    const establecimiento = '001';
-    
+    // Calcular fecha de timbrado (usar la del param o la de la factura)
+    let timbradoFecha = "2022-08-25";  // Por defecto
+    if (param.timbradoFecha) {
+      timbradoFecha = param.timbradoFecha;
+    } else if (data.fecha) {
+      // Extraer solo la fecha (YYYY-MM-DD) sin hora ni microsegundos
+      timbradoFecha = data.fecha.split('T')[0];
+    }
+
     const params = {
-      version: 150,
-      ruc: empresa.ruc,  // Con guión para xmlgen
-      razonSocial: empresa.razonSocial || empresa.nombreFantasia,
-      nombreFantasia: empresa.nombreFantasia,
-      actividadesEconomicas: [{
+      version: param.version || 150,
+      ruc: param.ruc || empresa.ruc,
+      razonSocial: param.razonSocial || empresa.razonSocial || param.nombreFantasia || 'Empresa S.A.',
+      nombreFantasia: param.nombreFantasia || empresa.nombreFantasia || 'Empresa',
+      actividadesEconomicas: param.actividadesEconomicas || [{
         codigo: "1254",
         descripcion: "Desarrollo de Software"
       }],
       timbradoNumero: timbrado,
-      timbradoFecha: datosCompletos.fecha ? new Date(normalizarDatetime(datosCompletos.fecha)).toISOString().split('T')[0] : "2021-10-19",
-      tipoContribuyente: 1,
-      tipoRegimen: 1,
-      establecimientos: [{
+      timbradoFecha: timbradoFecha,
+      tipoContribuyente: param.tipoContribuyente || 2,
+      tipoRegimen: param.tipoRegimen || 8,
+      establecimientos: param.establecimientos || [{
         codigo: establecimiento,
         denominacion: "MATRIZ",
-        direccion: empresa.direccion || "N/A",
-        numeroCasa: "1",
+        direccion: param.direccion || empresa.direccion || "N/A",
+        numeroCasa: "0",
         departamento: 11,
         departamentoDescripcion: "ALTO PARANA",
         distrito: 145,
         distritoDescripcion: "CIUDAD DEL ESTE",
         ciudad: 3432,
         ciudadDescripcion: "PUERTO PTE.STROESSNER (MUNIC)",
-        telefono: empresa.telefono || "0973-527155",
-        email: empresa.email || "tips@tips.com.py"
+        telefono: param.telefono || empresa.telefono || "0973-527155",
+        email: param.email || empresa.email || "test@empresa.com.py"
       }]
     };
 
     await reportarProgreso(25);
 
     // ========================================
-    // 5. Generar XML
+    // 4. Generar XML
     // ========================================
     console.log('📝 Generando XML...');
 
@@ -124,30 +142,90 @@ async function procesarFactura(datosFactura, empresaId, job = null) {
     await reportarProgreso(35);
 
     // ========================================
-    // 6. Firmar XML
+    // 5. Firmar XML y extraer DigestValue + CDC
     // ========================================
     console.log('✍️  Firmando XML...');
     const rutaCertificado = empresa.obtenerRutaCertificado();
     const contrasena = certificadoService.descifrarContrasena(empresa.certificado.contrasena);
-    
+
     const xmlFirmado = await xmlsign.signXML(xmlGenerado, rutaCertificado, contrasena);
     console.log('✅ XML firmado exitosamente');
+    
+    // EXTRAER DigestValue y CDC INMEDIATAMENTE (antes de enviar a SET)
+    try {
+      const xml2js = require('xml2js');
+      const xmlFirmadoObj = await xml2js.parseStringPromise(xmlFirmado);
+
+      // Extraer DigestValue de la firma digital
+      // La estructura es: rDE > Signature > SignedInfo > Reference > DigestValue
+      if (xmlFirmadoObj?.rDE?.Signature?.[0]?.SignedInfo?.[0]?.Reference?.[0]?.DigestValue?.[0]) {
+        digestValueFirma = xmlFirmadoObj.rDE.Signature[0].SignedInfo[0].Reference[0].DigestValue[0];
+        console.log(`🔐 DigestValue extraído: ${digestValueFirma}`);
+      } else {
+        console.warn('⚠️ No se encontró DigestValue en el XML firmado');
+      }
+
+      // Extraer CDC (Código de Control) del atributo Id del elemento DE
+      // Ejemplo: <DE Id="01036040761001001000000322026022719876543220">
+      if (xmlFirmadoObj?.rDE?.DE?.[0]?.$?.Id) {
+        cdcFirma = xmlFirmadoObj.rDE.DE[0].$.Id;
+        console.log(`🔢 CDC extraído (atributo Id): ${cdcFirma}`);
+      } else if (xmlFirmadoObj?.['rDE:DE']?.[0]?.$?.Id) {
+        cdcFirma = xmlFirmadoObj['rDE:DE'][0].$.Id;
+        console.log(`🔢 CDC extraído (atributo Id namespace): ${cdcFirma}`);
+      } else {
+        console.warn('⚠️ No se encontró CDC en el atributo Id del DE');
+        console.log('🔍 Estructura del XML:', Object.keys(xmlFirmadoObj));
+        // Log más detallado para debugging
+        if (xmlFirmadoObj?.rDE?.DE?.[0]) {
+          console.log('📋 DE attributes:', xmlFirmadoObj.rDE.DE[0].$);
+        }
+      }
+
+      // GUARDAR DigestValue y CDC EN BD INMEDIATAMENTE
+      if (invoiceId) {
+        try {
+          const Invoice = require('../models/Invoice');
+          const updateData = {};
+          if (digestValueFirma) updateData.digestValue = digestValueFirma;
+          if (cdcFirma) updateData.cdc = cdcFirma;
+
+          if (Object.keys(updateData).length > 0) {
+            await Invoice.findByIdAndUpdate(invoiceId, {
+              ...updateData,
+              estadoSifen: 'enviado'  // Cambiar a 'enviado' mientras se procesa en SET
+            });
+            console.log(`✅ DigestValue y CDC guardados en BD para factura ${invoiceId}`);
+            console.log(`   DigestValue: ${digestValueFirma?.substring(0, 20)}...`);
+            console.log(`   CDC: ${cdcFirma}`);
+          } else {
+            console.warn('⚠️ No hay datos para guardar en BD');
+          }
+        } catch (dbErr) {
+          console.warn('⚠️ No se pudo guardar en BD:', dbErr.message);
+        }
+      }
+    } catch (err) {
+      console.warn('⚠️ No se pudo extraer datos del XML firmado:', err.message);
+      console.error(err);
+    }
+    
     await reportarProgreso(50);
 
     // ========================================
-    // 7. Generar y agregar QR
+    // 6. Generar y agregar QR
     // ========================================
     console.log('📱 Generando QR...');
     const idCSC = empresa.configuracionSifen.idCSC || '0001';
     const CSC = empresa.configuracionSifen.csc || 'ABCD0000000000000000000000000000';
     const ambiente = empresa.configuracionSifen.modo || 'test';
-    
+
     const xmlConQR = await qr.generateQR(xmlFirmado, idCSC, CSC, ambiente);
     console.log('✅ QR generado e incrustado');
     await reportarProgreso(60);
 
     // ========================================
-    // 8. GUARDAR XML INMEDIATAMENTE (ANTES DE ENVIAR A SET)
+    // 7. GUARDAR XML INMEDIATAMENTE (ANTES DE ENVIAR A SET)
     // ========================================
     // CRÍTICO: Guardar el XML firmado ANTES de enviar a SET para no perderlo si falla la conexión
     const fecha = new Date();
@@ -201,7 +279,7 @@ async function procesarFactura(datosFactura, empresaId, job = null) {
     await reportarProgreso(70);
 
     // ========================================
-    // 9. Enviar a SET (o mock) - AHORA EL XML YA ESTÁ GUARDADO
+    // 9. Enviar a SET - AHORA EL XML YA ESTÁ GUARDADO
     // ========================================
     console.log('📤 Enviando a SET...');
     const idDocumento = crypto.randomBytes(16).toString('hex');
@@ -234,7 +312,7 @@ async function procesarFactura(datosFactura, empresaId, job = null) {
     // ========================================
     let codigoRetorno = '0000';
     let mensajeRetorno = null;
-    let digestValue = null;
+    let digestValueRespuesta = null;  // De la respuesta SOAP
     let fechaProceso = null;
     let estadoResultado = null;
     let estadoSifen = 'enviado';
@@ -242,10 +320,10 @@ async function procesarFactura(datosFactura, empresaId, job = null) {
     if (soapResponse) {
       codigoRetorno = extraerCodigoRetorno(soapResponse);
       mensajeRetorno = extraerMensajeRetorno(soapResponse);
-      digestValue = extraerDigestValue(soapResponse);
+      digestValueRespuesta = extraerDigestValue(soapResponse);
       fechaProceso = extraerFechaProceso(soapResponse);
       estadoResultado = extraerEstadoResultado(soapResponse);
-      estadoSifen = determinarEstadoSegunCodigoRetorno(codigoRetorno, estadoResultado, mensajeRetorno);
+      estadoSifen = determinarEstadoSegunCodigo(codigoRetorno);
       console.log(`📋 Código: ${codigoRetorno}, Estado: ${estadoSifen}`);
     } else {
       // Error de conexión: establecer estado de error
@@ -255,21 +333,26 @@ async function procesarFactura(datosFactura, empresaId, job = null) {
       console.log(`❌ Estado: ${estadoSifen} - ${mensajeRetorno}`);
     }
 
+    // Calcular estado visual para el frontend (colores)
+    const estadoVisual = determinarEstadoVisual(codigoRetorno);
+
     await reportarProgreso(80);
 
     // ========================================
     // 11. Retornar resultado
     // ========================================
+    // NOTA: El CDC y DigestValue ya fueron guardados en BD después de firmar el XML
     return {
       success: true,
-      cdc: cdcGenerado,
+      cdc: cdcFirma,  // CDC extraído después de firmar
       xmlPath: xmlPathRelativo,  // Para BD
       xmlContent: xmlConQR,
       rutaArchivo: rutaArchivo,  // Ruta absoluta para KUDE
       estado: estadoSifen,
+      estadoVisual: estadoVisual,  // Para colores en frontend
       codigoRetorno: codigoRetorno,
       mensajeRetorno: mensajeRetorno,
-      digestValue: digestValue,
+      digestValue: digestValueFirma,  // DigestValue extraído después de firmar
       fechaProceso: fechaProceso,
       correlativo: correlativo,
       rutaArchivo: rutaArchivo
@@ -288,22 +371,21 @@ async function procesarFactura(datosFactura, empresaId, job = null) {
  * 
  * IMPORTANTE: El JAR no soporta espacios en la ruta, usamos enlace simbólico temporal
  */
-async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactura = null) {
+async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactura = null, empresa = null) {
   try {
     console.log('📄 Generando KUDE...');
 
     const fs = require('fs');
     const path = require('path');
     const java8Path = process.env.JAVA8_HOME || process.env.JAVA_HOME || 'java';
-    const srcJasper =  path.join(__dirname, `../node_modules/facturacionelectronicapy-kude/dist/DE/`);   
+    const srcJasper =  path.join(__dirname, `../node_modules/facturacionelectronicapy-kude/dist/DE/`);
 
     const destFolder = path.join(__dirname, `../de_output`,
                                   fechaCreacion.getFullYear().toString(),
                                   String(fechaCreacion.getMonth() + 1).padStart(2, '0'), '/');
-
     const jsonParam = {
       ambiente: "1",
-      LOGO_URL: "https://lrtv.jaranetwork.com/sites/default/files/styles/poster/public/logos/hit.png?itok=UHWpjKPdd",
+      LOGO_URL: empresa?.configuracionSifen?.urlLogo || "https://lrtv.jaranetwork.com/sites/default/files/styles/poster/public/logos/hit.png?itok=UHWpjKPdd",
       active: true
     };
     const jsonPDF = JSON.stringify(jsonParam);
@@ -500,103 +582,8 @@ function completarDatosConEmpresa(datosFactura, empresa) {
   return datosCompletos;
 }
 
-/**
- * Generar CDC según SIFEN v150
- */
-function generarCDC(datosFactura) {
-  const tipoDocumento = String(datosFactura.tipoDocumento || 1).padStart(2, '0');
-
-  // Usar el RUC de datosFactura.ruc o datosFactura.emisor.ruc
-  const rucCompleto = (datosFactura.ruc || datosFactura.emisor?.ruc || '8001234-5').toString().replace(/-/g, '');
-  const rucEmisor = rucCompleto.substring(0, 8).padStart(8, '0');
-  const dvEmisor = rucCompleto.substring(8, 9) || '1';
-
-  const establecimiento = String(datosFactura.establecimiento || '001').padStart(3, '0');
-  const puntoExp = String(datosFactura.punto || '001').padStart(3, '0');
-  const numeroDoc = String(datosFactura.numero || '0000001').padStart(7, '0');
-  const tipoContribuyente = '1';
-
-  let fechaEmision;
-  if (datosFactura.fecha) {
-    // Normalizar fecha de ERPNext (microsegundos → milisegundos)
-    const fechaNormalizada = normalizarDatetime(datosFactura.fecha);
-    const f = new Date(fechaNormalizada);
-    fechaEmision = `${f.getFullYear()}${String(f.getMonth() + 1).padStart(2, '0')}${String(f.getDate()).padStart(2, '0')}`;
-  } else {
-    const now = new Date();
-    fechaEmision = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-  }
-
-  const tipoEmision = String(datosFactura.tipoEmision || 1).padStart(1, '0');
-  const codigoSeguridad = String(datosFactura.codigoSeguridadAleatorio || Math.floor(Math.random() * 900000000)).padStart(9, '0');
-
-  // Construir CDC sin DV
-  const cdcSinDV = `${tipoDocumento}${rucEmisor}${dvEmisor}${establecimiento}${puntoExp}${numeroDoc}${tipoContribuyente}${fechaEmision}${tipoEmision}${codigoSeguridad}`;
-
-  // Calcular DV (módulo 11)
-  const dv = calcularDV(cdcSinDV);
-
-  return `${cdcSinDV}${dv}`;
-}
-
-/**
- * Calcular dígito verificador (módulo 11)
- */
-function calcularDV(cdc) {
-  let suma = 0;
-  let multiplicador = 2;
-  
-  for (let i = cdc.length - 1; i >= 0; i--) {
-    suma += parseInt(cdc[i]) * multiplicador;
-    multiplicador = multiplicador >= 7 ? 2 : multiplicador + 1;
-  }
-  
-  const resto = suma % 11;
-  const dv = resto === 0 ? 0 : (resto === 1 ? 1 : 11 - resto);
-  
-  return String(dv);
-}
-
-/**
- * Extraer datos de respuesta SOAP
- */
-function extraerCodigoRetorno(xml) {
-  const match = xml.match(/<codigoRetorno>(.*?)<\/codigoRetorno>/);
-  return match?.[1]?.trim() || '0000';
-}
-
-function extraerMensajeRetorno(xml) {
-  const match = xml.match(/<mensajeRetorno>(.*?)<\/mensajeRetorno>/);
-  return match?.[1]?.trim() || null;
-}
-
-function extraerDigestValue(xml) {
-  const match = xml.match(/<digestValue>(.*?)<\/digestValue>/);
-  return match?.[1]?.trim() || null;
-}
-
-function extraerFechaProceso(xml) {
-  const match = xml.match(/<fechaProceso>(.*?)<\/fechaProceso>/);
-  return match?.[1]?.trim() || null;
-}
-
-function extraerEstadoResultado(xml) {
-  const match = xml.match(/<estadoResultado>(.*?)<\/estadoResultado>/);
-  return match?.[1]?.trim() || null;
-}
-
-function determinarEstadoSegunCodigoRetorno(codigo, estadoResultado, mensaje) {
-  if (!codigo) return 'enviado';
-  if (['0000', '0', '2', '0421'].includes(codigo)) return 'aceptado';
-  if (['3', '0003'].includes(codigo)) return 'procesando';
-  if (['1000', '1001', '1002', '1003', '1004', '1'].includes(codigo)) return 'rechazado';
-  return 'enviado';
-}
-
 module.exports = {
   procesarFactura,
   generarKUDE,
-  completarDatosConEmpresa,
-  generarCDC,
-  calcularDV
+  completarDatosConEmpresa
 };

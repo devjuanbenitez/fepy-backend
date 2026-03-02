@@ -5,6 +5,11 @@ const path = require('path');
 const Invoice = require('../models/Invoice');
 const OperationLog = require('../models/OperationLog');
 const { verificarToken } = require('../middleware/auth');
+const {
+  extraerCodigoRetorno,
+  extraerMensajeRetorno,
+  extraerEstadoResultado
+} = require('../utils/estadoSifen');
 
 // Todas las rutas requieren autenticación
 router.use(verificarToken);
@@ -140,8 +145,16 @@ router.post('/:id/retry', async (req, res) => {
     const retryLog = new OperationLog({
       invoiceId: invoice._id,
       tipoOperacion: 'reintento',
-      descripcion: 'Reintento de envío a SIFEN',
-      fecha: new Date()
+      descripcion: `Reintento de envío a SIFEN - CDC: ${invoice.cdc}`,
+      estado: 'warning',
+      fecha: new Date(),
+      detalle: {
+        cdc: invoice.cdc,
+        correlativo: invoice.correlativo,
+        estadoAnterior: invoice.estadoSifen,
+        xmlPath: invoice.xmlPath,
+        motivo: 'Reintento manual desde frontend'
+      }
     });
 
     await retryLog.save();
@@ -149,12 +162,12 @@ router.post('/:id/retry', async (req, res) => {
     // ========================================
     // LÓGICA DE REENVÍO:
     // 1. Leer el XML original desde el archivo
-    // 2. Volver a enviar al mock-SET
+    // 2. Volver a enviar a la SET
     // 3. Actualizar el estado según la respuesta
     // ========================================
     
     // Verificar que existe el archivo XML
-    if (!invoice.xmlPath || !fs.existsSync(path.join(__dirname, '../../de_output', invoice.xmlPath))) {
+    if (!invoice.xmlPath || !fs.existsSync(path.join(__dirname, '../de_output', invoice.xmlPath))) {
       return res.status(400).json({
         message: 'No se puede reenviar: XML no encontrado',
         detalle: 'El archivo XML de esta factura no existe en el servidor'
@@ -162,7 +175,7 @@ router.post('/:id/retry', async (req, res) => {
     }
 
     // Leer el XML original
-    const xmlPath = path.join(__dirname, '../../de_output', invoice.xmlPath);
+    const xmlPath = path.join(__dirname, '../de_output', invoice.xmlPath);
     const xmlOriginal = fs.readFileSync(xmlPath, 'utf8');
 
     // Extraer el CDC de la factura
@@ -179,19 +192,17 @@ router.post('/:id/retry', async (req, res) => {
     invoice.estadoSifen = 'procesando';
     await invoice.save();
 
-    // Enviar el XML al mock-SET para actualizar el estado
+    // Enviar el XML a la SET para actualizar el estado
     try {
-      // Ruta corregida: subir 2 niveles desde routes/ hasta proyecto-sifen/
       const setApi = require('../../mock-set/setapi-mock').default;
       const idDocumento = 'retry-' + Date.now();
       const ambiente = process.env.AMBIENTE_SET || 'test';
-      const certificateP12Path = path.join(__dirname, '../../../certificados', 'p12', 'certificado.p12');
-      const certificatePassword = '123456';
 
-      console.log(`🔄 Reenviando factura CDC ${cdc} al mock-SET...`);
-      
+      console.log(`🔄 Reenviando factura CDC ${cdc} a la SET...`);
+
       // Enviar el XML firmado (ya tiene el QR incrustado)
-      const soapResponse = await setApi.recibe(idDocumento, xmlOriginal, ambiente, certificateP12Path, certificatePassword);
+      // Nota: El certificado no es necesario porque el XML ya está firmado
+      const soapResponse = await setApi.recibe(idDocumento, xmlOriginal, ambiente);
 
       console.log('📄 Respuesta SOAP recibida en reenvío:');
       console.log(soapResponse.substring(0, 500) + '...');
@@ -201,11 +212,33 @@ router.post('/:id/retry', async (req, res) => {
       const mensajeRetorno = extraerMensajeRetorno(soapResponse);
       const estadoResultado = extraerEstadoResultado(soapResponse);
 
-      // Determinar nuevo estado
-      const nuevoEstado = determinarEstadoSegunCodigoRetorno(codigoRetorno, estadoResultado, mensajeRetorno);
+      // Determinar nuevo estado usando la función compartida
+      // Para recepción síncrona, el estado se determina por el código de retorno
+      // NOTA: El estado "observado" solo se usa para código 1005 (transmisión extemporánea)
+      let nuevoEstado = 'enviado';
+      let estadoVisual = 'observado';  // Por defecto para 0000
+      
+      if (codigoRetorno === '0260') {
+        nuevoEstado = 'aceptado';
+        estadoVisual = 'aceptado';
+      } else if (codigoRetorno === '1005') {
+        // Transmisión extemporánea - ÚNICO CASO donde estado = 'observado'
+        nuevoEstado = 'observado';
+        estadoVisual = 'observado';
+      } else if (codigoRetorno === '0000') {
+        nuevoEstado = 'enviado';  // En procesamiento
+        estadoVisual = 'observado';  // Amber
+      } else if (['1000', '1001', '1002', '1003', '1004', '0420'].includes(codigoRetorno)) {
+        nuevoEstado = 'rechazado';
+        estadoVisual = 'rechazado';
+      } else if (['0', '2'].includes(codigoRetorno)) {
+        nuevoEstado = 'aceptado';  // Códigos legacy
+        estadoVisual = 'aceptado';
+      }
 
       // Actualizar factura con la respuesta
       invoice.estadoSifen = nuevoEstado;
+      invoice.estadoVisual = estadoVisual;
       invoice.codigoRetorno = codigoRetorno;
       invoice.mensajeRetorno = mensajeRetorno;
       await invoice.save();
@@ -214,10 +247,18 @@ router.post('/:id/retry', async (req, res) => {
       const resultLog = new OperationLog({
         invoiceId: invoice._id,
         tipoOperacion: 'reintento_respuesta',
-        descripcion: `Reenvío completado - Estado: ${nuevoEstado}, Código: ${codigoRetorno}`,
+        descripcion: `Reenvío completado - Estado: ${nuevoEstado}, Visual: ${estadoVisual}, Código: ${codigoRetorno}`,
         estadoAnterior: 'procesando',
         estadoNuevo: nuevoEstado,
-        fecha: new Date()
+        fecha: new Date(),
+        detalle: {
+          cdc: cdc,
+          codigoRetorno: codigoRetorno,
+          mensajeRetorno: mensajeRetorno,
+          estadoResultado: estadoResultado,
+          estadoVisual: estadoVisual,
+          idDocumento: idDocumento
+        }
       });
       await resultLog.save();
 
@@ -233,11 +274,26 @@ router.post('/:id/retry', async (req, res) => {
 
     } catch (error) {
       console.error('❌ Error al reenviar:', error.message);
-      
+
       invoice.estadoSifen = 'error';
+      invoice.estadoVisual = 'rechazado';
       invoice.mensajeRetorno = `Error al reenviar: ${error.message}`;
       await invoice.save();
-      
+
+      // Registrar error del reenvío
+      const errorLog = new OperationLog({
+        invoiceId: invoice._id,
+        tipoOperacion: 'error',
+        descripcion: `Error en reintento de envío: ${error.message}`,
+        estado: 'error',
+        detalle: {
+          error: error.message,
+          stack: error.stack
+        },
+        fecha: new Date()
+      });
+      await errorLog.save();
+
       res.status(500).json({
         message: 'Error al reenviar factura',
         error: error.message
@@ -356,79 +412,5 @@ router.get('/:id/download-pdf', async (req, res) => {
     res.status(500).json({ message: 'Error al descargar PDF' });
   }
 });
-
-// ========================================
-// FUNCIONES AUXILIARES PARA EXTRAER DATOS DE RESPUESTA SOAP
-// ========================================
-
-function extraerCodigoRetorno(xmlContent) {
-  try {
-    const match = xmlContent.match(/<codigoRetorno>(.*?)<\/codigoRetorno>/);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return null;
-  } catch (error) {
-    console.warn('⚠️ Error al extraer código de retorno:', error.message);
-    return null;
-  }
-}
-
-function extraerMensajeRetorno(xmlContent) {
-  try {
-    const match = xmlContent.match(/<mensajeRetorno>(.*?)<\/mensajeRetorno>/);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return null;
-  } catch (error) {
-    console.warn('⚠️ Error al extraer mensaje de retorno:', error.message);
-    return null;
-  }
-}
-
-function extraerEstadoResultado(xmlContent) {
-  try {
-    const match = xmlContent.match(/<estadoResultado>(.*?)<\/estadoResultado>/);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return null;
-  } catch (error) {
-    console.warn('⚠️ Error al extraer estado de resultado:', error.message);
-    return null;
-  }
-}
-
-function determinarEstadoSegunCodigoRetorno(codigoRetorno, estadoResultado = null, mensajeRetorno = null) {
-  if (!codigoRetorno) return 'enviado';
-
-  // Códigos de éxito
-  if (codigoRetorno === '0000' || codigoRetorno === '0' || codigoRetorno === '2') {
-    return 'aceptado';
-  }
-  
-  // CDC encontrado en consulta
-  if (codigoRetorno === '0421') {
-    return 'aceptado';
-  }
-  
-  // CDC pendiente
-  if (codigoRetorno === '3' || codigoRetorno === '0003') {
-    return 'procesando';
-  }
-  
-  // CDC inexistente
-  if (codigoRetorno === '0420') {
-    return 'error';
-  }
-  
-  // Rechazados
-  if (['1000', '1001', '1002', '1003', '1004', '1'].includes(codigoRetorno)) {
-    return 'rechazado';
-  }
-  
-  return 'enviado';
-}
 
 module.exports = router;

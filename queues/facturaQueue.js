@@ -152,17 +152,100 @@ async function cleanCompletedJobs(queue, count = 100) {
 }
 
 /**
+ * Limpiar cola de fallidos
+ */
+async function cleanFailedJobs(queue) {
+  const jobs = await queue.getFailed();
+  const removed = await Promise.all(jobs.map(job => job.remove()));
+  return removed.length;
+}
+
+/**
+ * Limpiar toda la cola (todos los estados)
+ */
+async function cleanAllJobs(queue) {
+  const [waiting, active, completed, failed, delayed, paused] = await Promise.all([
+    queue.getWaiting(),
+    queue.getActive(),
+    queue.getCompleted(),
+    queue.getFailed(),
+    queue.getDelayed(),
+    queue.getPaused()
+  ]);
+
+  const allJobs = [...waiting, ...active, ...completed, ...failed, ...delayed, ...paused];
+  const removed = await Promise.all(allJobs.map(job => job.remove()));
+  return removed.length;
+}
+
+/**
+ * Obtener jobs recientes de las colas
+ */
+async function getRecentJobs(limit = 20) {
+  const [completed, failed, active, waiting] = await Promise.all([
+    facturaQueue.getCompleted(0, limit - 1),
+    facturaQueue.getFailed(0, limit - 1),
+    facturaQueue.getActive(0, limit - 1),
+    facturaQueue.getWaiting(0, limit - 1)
+  ]);
+
+  // Formatear jobs con información relevante
+  const formatJob = (job, queueName = 'facturacion') => {
+    // Los datos pueden estar en diferentes niveles dependiendo de cómo se guardó el job
+    const datosFactura = job.data?.datosFactura;
+    
+    // Estructura ERPNext: datosFactura.data.ruc o datosFactura.param.ruc
+    const data = datosFactura?.data || datosFactura;
+    const param = datosFactura?.param || {};
+    
+    // Extraer RUC del cliente desde data.cliente.ruc
+    const ruc = data?.cliente?.ruc || data.ruc || param.ruc || job.data?.ruc || 'N/A';
+    
+    // Extraer número de factura
+    const numero = data.numero || job.data?.numero || 'N/A';
+    
+    // Obtener timestamp
+    const timestamp = job.finishedOn || job.processedOn || job.timestamp;
+    
+    return {
+      id: job.id,
+      queue: queueName,
+      estado: job.failedReason ? 'failed' : job.finishedOn ? 'completed' : job.processedOn ? 'active' : 'waiting',
+      correlativo: numero,
+      ruc: ruc,
+      timestamp: timestamp,
+      error: job.failedReason || null,
+      attempts: job.attemptsMade || 0
+    };
+  };
+
+  // Combinar y ordenar por fecha (más reciente primero)
+  const allJobs = [
+    ...completed.map(job => formatJob(job, 'facturacion')),
+    ...failed.map(job => formatJob(job, 'facturacion')),
+    ...active.map(job => formatJob(job, 'facturacion')),
+    ...waiting.map(job => formatJob(job, 'facturacion'))
+  ];
+
+  // Ordenar por timestamp descendente
+  allJobs.sort((a, b) => b.timestamp - a.timestamp);
+
+  // Retornar los más recientes
+  return allJobs.slice(0, limit);
+}
+
+/**
  * Reintentar jobs fallidos
  */
 async function retryFailedJobs(queue, limit = 10) {
   const jobs = await queue.getFailed();
   const toRetry = jobs.slice(0, limit);
-  
+
   for (const job of toRetry) {
     await job.retry();
     console.log(`🔄 Job ${job.id} reencolado para reintento`);
   }
-  
+
   return toRetry.length;
 }
 
@@ -174,7 +257,10 @@ module.exports = {
   facturaQueue,
   kudeQueue,
   getQueueStats,
+  getRecentJobs,
   cleanCompletedJobs,
+  cleanFailedJobs,
+  cleanAllJobs,
   retryFailedJobs,
   redisConfig
 };

@@ -62,7 +62,8 @@ function normalizarDatetime(datetimeStr, formatoSIFEN = false) {
 /**
  * Normaliza todas las fechas en un objeto de factura de ERPNext
  * Busca recursivamente campos de fecha y los normaliza
- * 
+ * Preserva el formato YYYY-MM-DD si ya está en ese formato
+ *
  * @param {Object} obj - Objeto a procesar
  * @returns {Object} Objeto con fechas normalizadas
  */
@@ -77,6 +78,11 @@ function normalizarFechasEnObjeto(obj) {
 
       // Si es un campo de fecha conocido
       if (camposFecha.includes(key) && (typeof value === 'string' || typeof value === 'number' || value instanceof Date)) {
+        // Si ya está en formato YYYY-MM-DD, preservarlo
+        if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+          // No convertir, ya está en formato SIFEN
+          continue;
+        }
         obj[key] = normalizarDatetime(value);
       }
       // Si es un objeto o array, procesar recursivamente
@@ -90,16 +96,23 @@ function normalizarFechasEnObjeto(obj) {
 }
 
 /**
- * Obtiene fecha en formato SIFEN v150 (YYYY-MM-DDTHH:MM:SS sin milisegundos ni Z)
+ * Obtiene fecha en formato SIFEN v150
+ * Si la fecha ya es YYYY-MM-DD, la preserva
+ * Si tiene hora, devuelve YYYY-MM-DDTHH:MM:SS (sin milisegundos ni Z)
  * @param {string|Date} fecha - Fecha a convertir
  * @returns {string} Fecha en formato SIFEN
  */
 function formatoFechaSIFEN(fecha) {
+  // Si ya está en formato YYYY-MM-DD, preservarlo
+  if (typeof fecha === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+    return fecha;
+  }
   return normalizarDatetime(fecha, true);
 }
 
 /**
  * Convierte todas las fechas en un objeto a formato SIFEN para librería xmlgen
+ * Preserva el formato YYYY-MM-DD si ya está en ese formato
  * @param {Object} obj - Objeto a procesar
  * @returns {Object} Objeto con fechas en formato SIFEN
  */
@@ -114,6 +127,11 @@ function convertirFechasASIFEN(obj) {
 
       // Si es un campo de fecha conocido
       if (camposFecha.includes(key) && (typeof value === 'string' || typeof value === 'number' || value instanceof Date)) {
+        // Si ya está en formato YYYY-MM-DD (sin hora), preservarlo
+        if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+          // Ya está en formato SIFEN, no convertir
+          continue;
+        }
         obj[key] = formatoFechaSIFEN(value);
       }
       // Si es un objeto o array, procesar recursivamente

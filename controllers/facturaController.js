@@ -16,6 +16,16 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { normalizarFechasEnObjeto, normalizarDatetime } = require('../utils/fechaUtils');
+const {
+  determinarEstadoSegunCodigo,
+  determinarEstadoVisual,
+  getColorPorEstadoVisual,
+  extraerCodigoRetorno,
+  extraerMensajeRetorno,
+  extraerCDC,
+  extraerDigestValue,
+  extraerFechaProceso
+} = require('../utils/estadoSifen');
 
 /**
  * Generar factura simplificada
@@ -33,25 +43,31 @@ exports.generarFactura = async (req, res) => {
     // ========================================
     // ERPNext envía fechas con microsegundos (ej: 2026-02-24T15:12:58.715809)
     // JavaScript espera milisegundos (ej: 2026-02-24T15:12:58.715Z)
+    // Usamos datosFactura.data para la estructura unificada
+    const data = datosFactura.data || datosFactura;
     console.log('📅 Normalizando fechas de ERPNext...');
-    console.log('  Fecha original:', datosFactura.fecha);
-    datosFactura = normalizarFechasEnObjeto(datosFactura);
-    console.log('  Fecha normalizada:', datosFactura.fecha);
+    console.log('  Fecha original:', data.fecha);
+    normalizarFechasEnObjeto(data);
+    console.log('  Fecha normalizada:', data.fecha);
 
     // 1. Validar que se reciba el RUC
-    if (!ruc) {
+    // El RUC puede estar en param.ruc (estructura nueva) o en ruc (estructura vieja)
+    const rucBusqueda = datosFactura.param?.ruc || ruc;
+    
+    if (!rucBusqueda) {
       return res.status(400).json({
         success: false,
-        error: 'El RUC de la empresa es requerido'
+        error: 'RUC de empresa requerido',
+        mensaje: 'El campo "param.ruc" o "ruc" es requerido para identificar la empresa emisora'
       });
     }
 
     // 2. Buscar la empresa por RUC
-    const empresa = await Empresa.findOne({ ruc });
+    const empresa = await Empresa.findOne({ ruc: rucBusqueda });
     if (!empresa) {
       return res.status(404).json({
         success: false,
-        error: `No se encontró una empresa con RUC ${ruc}`
+        error: `No se encontró una empresa con RUC ${rucBusqueda}`
       });
     }
 
@@ -97,16 +113,34 @@ exports.generarFactura = async (req, res) => {
     }
     
     // 7. Crear registro inicial en BD
-    const correlativo = `${datosFactura.establecimiento || '001'}-${datosFactura.punto || '001'}-${String(datosFactura.numero).padStart(7, '0')}`;
-    
-    const totalFactura = datosFactura.totalPago || 
-      (datosFactura.items?.reduce((sum, item) => sum + (item.precioTotal || 0), 0) || 0);
-    
+    // Obtener datos de la estructura unificada (param/data o plana)
+    const datosData = datosFactura.data || datosFactura;
+    const establecimiento = datosData.establecimiento || '001';
+    const punto = datosData.punto || '001';
+    const numero = datosData.numero || '0000001';
+    const correlativo = `${establecimiento}-${punto}-${String(numero).padStart(7, '0')}`;
+
+    const totalFactura = datosData.totalPago || datosData.total || datosFactura.totalPago ||
+      (datosData.items?.reduce((sum, item) => sum + (item.precioTotal || 0), 0) || 0);
+
+    // Obtener datos del cliente (soportar ambas estructuras)
+    const cliente = datosData.cliente || datosFactura.cliente || {};
+
     const invoice = new Invoice({
       empresaId: empresa._id,
       rucEmpresa: ruc,
       correlativo: correlativo,
-      cliente: datosFactura.cliente,
+      cliente: {
+        ruc: cliente.ruc || cliente.documentoNumero || 'N/A',
+        nombre: cliente.razonSocial || cliente.nombreFantasia || cliente.nombre || 'N/A',
+        razonSocial: cliente.razonSocial,
+        nombreFantasia: cliente.nombreFantasia,
+        direccion: cliente.direccion,
+        telefono: cliente.telefono,
+        email: cliente.email,
+        documentoTipo: cliente.documentoTipo,
+        documentoNumero: cliente.documentoNumero
+      },
       total: totalFactura,
       estadoSifen: 'recibido',
       datosFactura: datosFactura,
@@ -167,12 +201,29 @@ exports.generarFactura = async (req, res) => {
     console.log('📱 Generando QR...');
     const qrCode = qr.GenerarQR(datosCompletos);
     const xmlConQR = xmlFirmado.replace('</rDE>', `<dCarQR>${qrCode}</dCarQR></rDE>`);
-    
+
+    // EXTRAER DigestValue del XML firmado ANTES de enviar (para validar después)
+    let digestValueOriginal = null;
+    try {
+      const xml2js = require('xml2js');
+      const xmlFirmadoObj = await xml2js.parseStringPromise(xmlFirmado);
+
+      // La estructura es: rDE > Signature > SignedInfo > Reference > DigestValue
+      if (xmlFirmadoObj?.rDE?.Signature?.[0]?.SignedInfo?.[0]?.Reference?.[0]?.DigestValue?.[0]) {
+        digestValueOriginal = xmlFirmadoObj.rDE.Signature[0].SignedInfo[0].Reference[0].DigestValue[0];
+        console.log(`🔐 DigestValue original del XML firmado: ${digestValueOriginal.substring(0, 30)}...`);
+      } else {
+        console.warn('⚠️ No se pudo extraer DigestValue del XML firmado');
+      }
+    } catch (err) {
+      console.warn('⚠️ No se pudo extraer DigestValue del XML firmado');
+    }
+
     // 12. Enviar a SET (o mock)
     console.log('📤 Enviando a SET...');
     const ambiente = empresa.configuracionSifen.modo;
     const idDocumento = crypto.randomBytes(16).toString('hex');
-    
+
     const respuestaSET = await setApi.recibe(
       idDocumento,
       xmlConQR,
@@ -180,20 +231,67 @@ exports.generarFactura = async (req, res) => {
       rutaCertificado,
       contrasena
     );
-    
+
     // 13. Procesar respuesta
     const codigoRetorno = extraerCodigoRetorno(respuestaSET);
     const mensajeRetorno = extraerMensajeRetorno(respuestaSET);
     const cdc = extraerCDC(respuestaSET);
-    
+    const digestValueRespuesta = extraerDigestValue(respuestaSET);
+    const fechaProceso = extraerFechaProceso(respuestaSET);
+
     console.log(`📄 Respuesta SET - Código: ${codigoRetorno}, Mensaje: ${mensajeRetorno}`);
-    
+    console.log(`   CDC: ${cdc}`);
+    console.log(`   DigestValue respuesta: ${digestValueRespuesta ? digestValueRespuesta.substring(0, 30) + '...' : 'N/A'}`);
+    console.log(`   Fecha Proceso: ${fechaProceso || 'N/A'}`);
+
+    // VALIDAR DigestValue: El de la respuesta debe coincidir con el del XML firmado
+    let digestValueValido = true;
+    if (digestValueOriginal && digestValueRespuesta) {
+      if (digestValueOriginal !== digestValueRespuesta) {
+        console.error('❌ ERROR: DigestValue no coincide!');
+        console.error(`   Original:   ${digestValueOriginal}`);
+        console.error(`   Respuesta:  ${digestValueRespuesta}`);
+        digestValueValido = false;
+      } else {
+        console.log('✅ DigestValue coincide correctamente');
+      }
+    }
+
     // 14. Actualizar factura en BD
-    invoice.estadoSifen = determinarEstadoSegunCodigo(codigoRetorno);
+    // Si el DigestValue no coincide, marcar como error independientemente del código de retorno
+    let estadoSifen;
+    let estadoVisual;
+    
+    if (!digestValueValido) {
+      // Error de integridad: DigestValue no coincide
+      estadoSifen = 'error';
+      estadoVisual = 'rechazado';
+      console.error('❌ Factura marcada como ERROR: DigestValue no coincide');
+    } else {
+      // DigestValue válido: usar estado según código de retorno
+      estadoSifen = determinarEstadoSegunCodigo(codigoRetorno);
+      estadoVisual = determinarEstadoVisual(codigoRetorno);
+    }
+
+    invoice.estadoSifen = estadoSifen;
+    invoice.estadoVisual = estadoVisual;
     invoice.codigoRetorno = codigoRetorno;
     invoice.mensajeRetorno = mensajeRetorno;
     invoice.cdc = cdc;
     invoice.fechaEnvio = new Date();
+
+    // Guardar respuesta completa SIFEN v150 con validación de DigestValue
+    invoice.respuestaSifen = {
+      codigo: codigoRetorno,
+      estado: mensajeRetorno.includes('aprobado') || mensajeRetorno.includes('Autorización') ? 'Aprobado' : 'Rechazado',
+      mensaje: mensajeRetorno,
+      fechaProceso: fechaProceso || new Date().toISOString().replace('T', ' ').substring(0, 19),
+      digestValue: digestValueRespuesta || null,
+      digestValueOriginal: digestValueOriginal || null,
+      digestValueValido: digestValueValido
+    };
+
+    console.log(`  Estado SIFEN: ${estadoSifen}, Estado Visual: ${estadoVisual}`);
     
     // 15. Guardar XML
     const fecha = new Date();
@@ -210,20 +308,52 @@ exports.generarFactura = async (req, res) => {
     fs.writeFileSync(rutaArchivo, xmlConQR);
     
     invoice.xmlPath = `${anio}/${mes}/${nombreArchivo}`;
-    
+
     await invoice.save();
-    
-    // 16. Registrar resultado
+
+    // 16. Registrar resultado - Verificar estado visual de la factura
+    let tipoOperacion = 'respuesta_sifen';
+    let descripcion = `Respuesta SET recibida - CDC: ${cdc}`;
+    let logEstado = 'success';
+
+    if (invoice.estadoVisual === 'aceptado') {
+      tipoOperacion = 'envio_exitoso';
+      descripcion = `Factura aceptada por SET - CDC: ${cdc}, Código: ${codigoRetorno}`;
+      logEstado = 'success';
+    } else if (invoice.estadoVisual === 'observado') {
+      tipoOperacion = 'actualizacion_estado';
+      descripcion = `Factura observada - CDC: ${cdc}, Código: ${codigoRetorno}, Mensaje: ${mensajeRetorno}`;
+      logEstado = 'warning';
+    } else if (invoice.estadoVisual === 'rechazado') {
+      tipoOperacion = 'error';
+      descripcion = `Factura rechazada por SET - CDC: ${cdc}, Código: ${codigoRetorno}, Mensaje: ${mensajeRetorno}`;
+      logEstado = 'error';
+    }
+
     await OperationLog.create({
       invoiceId: invoice._id,
-      tipoOperacion: 'envio_exitoso',
-      descripcion: `Factura enviada a SET - CDC: ${cdc}`,
-      estado: invoice.estadoSifen,
+      tipoOperacion: tipoOperacion,
+      descripcion: descripcion,
+      estado: logEstado,
       estadoAnterior: 'procesando',
-      estadoNuevo: invoice.estadoSifen
+      estadoNuevo: invoice.estadoSifen,
+      detalle: {
+        codigoRetorno: codigoRetorno,
+        mensajeRetorno: mensajeRetorno,
+        estadoVisual: invoice.estadoVisual,
+        respuestaSifen: invoice.respuestaSifen
+      }
     });
-    
-    console.log(`✅ Factura procesada exitosamente - CDC: ${cdc}`);
+
+    if (invoice.estadoVisual === 'aceptado') {
+      console.log(`✅ Factura procesada exitosamente - CDC: ${cdc}, Código: ${codigoRetorno}`);
+    } else if (invoice.estadoVisual === 'observado') {
+      console.log(`⚠️ Factura observada - CDC: ${cdc}, Código: ${codigoRetorno}, Mensaje: ${mensajeRetorno}`);
+    } else if (invoice.estadoVisual === 'rechazado') {
+      console.log(`❌ Factura rechazada por SET - CDC: ${cdc}, Código: ${codigoRetorno}`);
+    } else {
+      console.log(`📋 Factura ${invoice.estadoSifen} - CDC: ${cdc}`);
+    }
     
     // 17. Generar KUDE (PDF) si está disponible
     try {
@@ -288,82 +418,17 @@ exports.generarFactura = async (req, res) => {
 
 /**
  * Generar hash único para factura
+ * Soporta estructura plana y estructura param/data
  */
 function generarFacturaHash(datos) {
-  // Normalizar fecha para evitar errores con microsegundos de ERPNext
-  const fecha = normalizarDatetime(datos.fecha);
-  const cadena = `${datos.rucEmisor}|${datos.numero}|${fecha}`;
+  // Soportar ambas estructuras: param/data y plana
+  const ruc = datos.param?.ruc || datos.ruc || datos.rucEmisor || '';
+  const establecimiento = datos.data?.establecimiento || datos.establecimiento || '001';
+  const numero = datos.data?.numero || datos.numero || '';
+
+  // Hash único por RUC + Establecimiento + Número
+  const cadena = `${ruc}|${establecimiento}|${numero}`;
   return crypto.createHash('sha256').update(cadena).digest('hex');
-}
-
-/**
- * Extraer código de retorno de respuesta SOAP
- */
-function extraerCodigoRetorno(xmlContent) {
-  try {
-    const match = xmlContent.match(/<codigoRetorno>(.*?)<\/codigoRetorno>/);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return '0000';
-  } catch (error) {
-    console.warn('⚠️ Error al extraer código de retorno:', error.message);
-    return '0000';
-  }
-}
-
-/**
- * Extraer mensaje de retorno de respuesta SOAP
- */
-function extraerMensajeRetorno(xmlContent) {
-  try {
-    const match = xmlContent.match(/<mensajeRetorno>(.*?)<\/mensajeRetorno>/);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
-
-/**
- * Extraer CDC de respuesta SOAP
- */
-function extraerCDC(xmlContent) {
-  try {
-    const match = xmlContent.match(/<cdc>(.*?)<\/cdc>/);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
-
-/**
- * Determinar estado según código de retorno
- */
-function determinarEstadoSegunCodigo(codigo) {
-  if (!codigo) return 'enviado';
-  
-  // Éxito
-  if (['0000', '0', '2', '0421'].includes(codigo)) {
-    return 'aceptado';
-  }
-  
-  // Pendiente
-  if (['3', '0003'].includes(codigo)) {
-    return 'procesando';
-  }
-  
-  // Rechazado
-  if (['1000', '1001', '1002', '1003', '1004', '1'].includes(codigo)) {
-    return 'rechazado';
-  }
-  
-  return 'enviado';
 }
 
 /**

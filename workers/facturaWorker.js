@@ -68,13 +68,7 @@ facturaQueue.process('generar-factura', async (job) => {
     // ========================================
     // PROCESAR FACTURA
     // ========================================
-    console.log('📋 [WORKER] Datos antes de procesar:', {
-      ruc: datosFactura.ruc,
-      numero: datosFactura.numero,
-      tieneEmisor: !!datosFactura.emisor
-    });
-    
-    const resultado = await procesarFactura(datosFactura, empresaId, job);
+    const resultado = await procesarFactura(datosFactura, empresaId, job, facturaId);
     
     await job.progress(95);
     
@@ -82,6 +76,7 @@ facturaQueue.process('generar-factura', async (job) => {
     // ACTUALIZAR BD CON RESULTADO
     // ========================================
     invoice.estadoSifen = resultado.estado;
+    invoice.estadoVisual = resultado.estadoVisual;  // Para colores en frontend
     invoice.cdc = resultado.cdc;
     invoice.codigoRetorno = resultado.codigoRetorno;
     invoice.mensajeRetorno = resultado.mensajeRetorno;
@@ -89,21 +84,67 @@ facturaQueue.process('generar-factura', async (job) => {
     invoice.fechaProceso = resultado.fechaProceso;
     invoice.xmlPath = resultado.xmlPath;
     invoice.fechaEnvio = new Date();
-    
+
     await invoice.save();
+
+    // ========================================
+    // REGISTRAR RESULTADO - VERIFICAR ESTADO REAL
+    // ========================================
+    let tipoOperacion = 'respuesta_sifen';
+    let descripcion = `Respuesta SET recibida - CDC: ${resultado.cdc}`;
+    let estadoLog = 'success';
+
+    if (resultado.estado === 'aceptado') {
+      tipoOperacion = 'envio_exitoso';
+      descripcion = `Factura aceptada por SET - CDC: ${resultado.cdc}`;
+      estadoLog = 'success';
+    } else if (resultado.estado === 'observado') {
+      // Transmisión extemporánea (código 1005)
+      tipoOperacion = 'actualizacion_estado';
+      descripcion = `Factura con observación - CDC: ${resultado.cdc}, Código: ${resultado.codigoRetorno}`;
+      estadoLog = 'warning';
+    } else if (resultado.estado === 'enviado') {
+      // En procesamiento (código 0000)
+      tipoOperacion = 'envio_exitoso';
+      descripcion = `Factura enviada a SET - CDC: ${resultado.cdc}`;
+      estadoLog = 'success';
+    } else if (resultado.estado === 'rechazado') {
+      tipoOperacion = 'error';
+      descripcion = `Factura rechazada por SET - CDC: ${resultado.cdc}, Código: ${resultado.codigoRetorno}`;
+      estadoLog = 'error';
+    } else if (resultado.estado === 'error') {
+      tipoOperacion = 'error';
+      descripcion = `Error en procesamiento SET - CDC: ${resultado.cdc}, Código: ${resultado.codigoRetorno}`;
+      estadoLog = 'error';
+    } else if (resultado.estado === 'procesando') {
+      tipoOperacion = 'respuesta_sifen';
+      descripcion = `Factura en procesamiento - CDC: ${resultado.cdc}`;
+      estadoLog = 'success';
+    }
 
     await OperationLog.create({
       invoiceId: invoice._id,
-      tipoOperacion: 'envio_exitoso',
-      descripcion: `Factura ${resultado.estado} - CDC: ${resultado.cdc}`,
-      estado: 'success',  // ← Valor válido: success, error, warning
+      tipoOperacion: tipoOperacion,
+      descripcion: descripcion,
+      estado: estadoLog,
       detalle: {
         estadoSifen: resultado.estado,
+        estadoVisual: resultado.estadoVisual,
         codigoRetorno: resultado.codigoRetorno
       }
     });
-    
-    console.log(`✅ [WORKER] Factura ${facturaId} completada - CDC: ${resultado.cdc}`);
+
+    if (resultado.estado === 'aceptado') {
+      console.log(`✅ [WORKER] Factura ${facturaId} completada - CDC: ${resultado.cdc}`);
+    } else if (resultado.estado === 'rechazado') {
+      console.log(`❌ [WORKER] Factura ${facturaId} rechazada - CDC: ${resultado.cdc}, Código: ${resultado.codigoRetorno}`);
+    } else if (resultado.estado === 'error') {
+      console.log(`❌ [WORKER] Factura ${facturaId} con error - CDC: ${resultado.cdc}, Código: ${resultado.codigoRetorno}`);
+    } else if (resultado.estado === 'observado') {
+      console.log(`⚠️ [WORKER] Factura ${facturaId} observada - CDC: ${resultado.cdc}, Código: ${resultado.codigoRetorno}`);
+    } else {
+      console.log(`📋 [WORKER] Factura ${facturaId} ${resultado.estado} - CDC: ${resultado.cdc}`);
+    }
     
     await job.progress(100);
     
@@ -111,14 +152,17 @@ facturaQueue.process('generar-factura', async (job) => {
     // ENCOLAR GENERACIÓN DE KUDE
     // ========================================
     try {
-      await kudeQueue.add('generar-kude', {
+      const jobData = {
         facturaId: invoice._id.toString(),
         xmlPath: resultado.rutaArchivo,
         cdc: resultado.cdc,
         correlativo: resultado.correlativo,
         fechaCreacion: invoice.fechaCreacion,
-        datosFactura: invoice.datosFactura  // Pasar datos para construir nombre del PDF
-      }, {
+        datosFactura: invoice.datosFactura,  // Pasar datos para construir nombre del PDF
+        empresaId: invoice.empresaId?.toString()  // Pasar empresa para el logo
+      };
+      
+      await kudeQueue.add('generar-kude', jobData, {
         priority: 1
       });
       console.log('📋 [WORKER] KUDE encolado para generación');
@@ -163,12 +207,20 @@ facturaQueue.process('generar-factura', async (job) => {
 // ========================================
 
 kudeQueue.process('generar-kude', async (job) => {
-  const { facturaId, xmlPath, cdc, correlativo, fechaCreacion, datosFactura } = job.data;
+  const { facturaId, xmlPath, cdc, correlativo, fechaCreacion, datosFactura, empresaId } = job.data;
 
   console.log(`📄 [KUDE] Generando PDF para factura ${facturaId}`);
+  console.log(`🔑 empresaId recibido: ${empresaId}`);
 
   try {
-    const pdfPath = await generarKUDE(xmlPath, cdc, correlativo, new Date(fechaCreacion), datosFactura);
+    // Obtener empresa para el logo
+    const Empresa = require('../models/Empresa');
+    const empresa = await Empresa.findById(empresaId);
+    
+    console.log(`🏢 Empresa encontrada: ${empresa ? empresa.nombreFantasia : 'NULL'}`);
+    console.log(`🖼️ URL Logo: ${empresa?.configuracionSifen?.urlLogo || 'USANDO DEFAULT'}`);
+
+    const pdfPath = await generarKUDE(xmlPath, cdc, correlativo, new Date(fechaCreacion), datosFactura, empresa);
 
     if (pdfPath && fs.existsSync(pdfPath)) {
       // Actualizar factura con ruta del PDF

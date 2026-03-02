@@ -40,7 +40,7 @@ const invoiceSchema = new mongoose.Schema({
   },
   estadoSifen: {
     type: String,
-    enum: ['recibido', 'procesando', 'enviado', 'aceptado', 'rechazado', 'error', 'encolado'],
+    enum: ['recibido', 'procesando', 'enviado', 'aceptado', 'rechazado', 'error', 'encolado', 'observado'],
     default: 'recibido'
   },
   fechaEnvio: {
@@ -62,10 +62,38 @@ const invoiceSchema = new mongoose.Schema({
     type: String  // DigestValue de la firma digital
   },
   codigoRetorno: {
-    type: String  // Código de retorno de SIFEN (4 dígitos)
+    type: String  // Código de retorno de SIFEN (4 dígitos) - Legacy
   },
   mensajeRetorno: {
-    type: String  // Mensaje de retorno de SIFEN
+    type: String  // Mensaje de retorno de SIFEN - Legacy
+  },
+  // ========================================
+  // CAMPOS PARA RESPUESTA SIFEN v150 (Síncrono)
+  // ========================================
+  respuestaSifen: {
+    codigo: {
+      type: String,  // dCodRes - Código de resultado del procesamiento
+      index: true
+    },
+    estado: {
+      type: String,  // dEstRes - Estado del resultado (Aprobado/Rechazado)
+      index: true
+    },
+    mensaje: {
+      type: String  // dMsgRes - Mensaje descriptivo del resultado
+    },
+    fechaProceso: {
+      type: String  // dFecProc - Fecha y hora de procesamiento
+    },
+    digestValue: {
+      type: String  // dDigVal - Digest Value de la respuesta
+    }
+  },
+  // Estado visual para el frontend (según código de retorno)
+  estadoVisual: {
+    type: String,
+    enum: ['aceptado', 'observado', 'rechazado'],
+    default: 'rechazado'
   },
   kudePath: {
     type: String  // Ruta del archivo PDF KUDE generado
