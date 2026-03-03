@@ -4,7 +4,7 @@ Proyecto backend del sistema de facturación electrónica para Paraguay (SIFEN) 
 
 ## 📋 Descripción
 
-API RESTful para generar, firmar y enviar facturas electrónicas a la SET (Superintendencia de Tributación) bajo el sistema SIFEN.
+API RESTful para generar XML-KUDE, firmar xml, insertar QR y enviar facturas electrónicas a la SET (Superintendencia de Tributación) bajo el sistema SIFEN.
 
 **Características principales:**
 - ✅ Procesamiento asíncrono con colas (Bull + Redis)
@@ -81,15 +81,122 @@ POST /get_einvoice
 Authorization: Bearer <API_KEY>
 
 {
-  "ruc": "8001234-5",
-  "numero": "0000060",
-  "cliente": {
-    "razonSocial": "Cliente S.A.",
-    "ruc": "44444-1",
-    ...
+  "param": {
+    "version": 150,
+    "ruc": "3604076-1",
+    "razonSocial": "EMPRESA DE PRUEBA S.A.",
+    "nombreFantasia": "EMPRESA TEST",
+    "actividadesEconomicas": [{
+      "codigo": "1254",
+      "descripcion": "Desarrollo de Software"
+    }],
+    "timbradoNumero": "12558946",
+    "timbradoFecha": "2022-08-25",
+    "tipoContribuyente": 2,
+    "tipoRegimen": 8,
+    "establecimientos": [{
+      "codigo": "001",
+      "denominacion": "MATRIZ",
+      "direccion": "Barrio Carolina",
+      "numeroCasa": "0",
+      "complementoDireccion1": "Entre calle 2",
+      "complementoDireccion2": "y Calle 7",
+      "departamento": 11,
+      "departamentoDescripcion": "ALTO PARANA",
+      "distrito": 145,
+      "distritoDescripcion": "CIUDAD DEL ESTE",
+      "ciudad": 3432,
+      "ciudadDescripcion": "PUERTO PTE.STROESSNER (MUNIC)",
+      "telefono": "0973-527155",
+      "email": "test@empresa.com.py"
+    }]
   },
-  "items": [...],
-  "totalPago": 1000
+  
+  "data": {
+    "tipoDocumento": 1,
+    "establecimiento": "001",
+    "punto": "001",
+    "numero": "000002",
+    "codigoSeguridadAleatorio": "987654322",
+    "descripcion": "Factura electrónica de prueba",
+    "observacion": "Sin valor comercial ni fiscal - Solo para pruebas",
+    "fecha": "2026-02-27T10:00:00",
+    "tipoEmision": 1,
+    "tipoTransaccion": 1,
+    "tipoImpuesto": 1,
+    "moneda": "PYG",
+    "condicionAnticipo": 1,
+    "condicionTipoCambio": 1,
+    "descuentoGlobal": 0,
+    "anticipoGlobal": 0,
+    "cambio": 6700,
+    
+    "cliente": {
+      "contribuyente": true,
+      "ruc": "44444-1",
+      "razonSocial": "CLIENTE DE PRUEBA S.A.",
+      "nombreFantasia": "CLIENTE TEST",
+      "tipoOperacion": 1,
+      "direccion": "Av. Principal",
+      "numeroCasa": "123",
+      "complementoDireccion1": "Entre calles A y B",
+      "departamento": 1,
+      "departamentoDescripcion": "ASUNCION",
+      "distrito": 1,
+      "distritoDescripcion": "ASUNCION",
+      "ciudad": 1,
+      "ciudadDescripcion": "ASUNCION",
+      "pais": "PRY",
+      "paisDescripcion": "Paraguay",
+      "tipoContribuyente": 1,
+      "documentoTipo": 1,
+      "documentoNumero": "44444",
+      "telefono": "021-123456",
+      "celular": "0981-123456",
+      "email": "cliente@test.com"
+    },
+    
+    "usuario": {
+      "documentoTipo": 1,
+      "documentoNumero": "123456",
+      "nombre": "Vendedor Test",
+      "cargo": "Vendedor"
+    },
+    
+    "factura": {
+      "presencia": 1,
+      "fechaEnvio": "2026-02-27T18:00:00"
+    },
+    
+    "condicion": {
+      "tipo": 1,
+      "entregas": [{
+        "tipo": 1,
+        "monto": "1000",
+        "moneda": "PYG",
+        "cambio": 0
+      }]
+    },
+    
+    "items": [{
+      "codigo": "PROD-001",
+      "descripcion": "Producto de prueba",
+      "observacion": "Producto sin valor comercial - Solo testing",
+      "unidadMedida": 77,
+      "cantidad": 1,
+      "precioUnitario": 909.09,
+      "cambio": 0,
+      "descuento": 0,
+      "anticipo": 0,
+      "pais": "PRY",
+      "paisDescripcion": "Paraguay",
+      "ivaTipo": 1,
+      "ivaProporcion": 100,
+      "iva": 10
+    }],
+    
+    "totalPago": 1000
+  }
 }
 ```
 
@@ -150,31 +257,6 @@ MOCK_SET_URL=http://localhost:8082
 | `rechazado` | SET rechazó la factura |
 | `error` | Error en el proceso |
 
-## 🧪 Testing
-
-### Test de Carga
-
-```bash
-# Enviar 5 facturas simultáneas
-./test-queue.sh
-```
-
-### Test Manual con cURL
-
-```bash
-# Enviar factura
-curl -X POST http://localhost:8081/get_einvoice \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <API_KEY>" \
-  -d '{"ruc":"8001234-5","numero":"0000060",...}'
-
-# Consultar estado
-curl http://localhost:8081/api/factura/estado/<ID>
-
-# Ver cola
-curl http://localhost:8081/api/queue/stats | jq .
-```
-
 ## 📁 Estructura del Proyecto
 
 ```
@@ -215,54 +297,9 @@ fepy-backend/
 
 El sistema usa **API Keys** para autenticación:
 
-1. Crear API Key desde el frontend o directamente en BD
+1. Crear API Key desde el frontend
 2. Incluir en headers: `Authorization: Bearer <API_KEY>`
 3. Las API Keys pueden estar asociadas a una empresa específica
-
-## 📈 Performance
-
-| Escenario | Requests | Tiempo Respuesta |
-|-----------|----------|------------------|
-| 1 usuario | 1 | ~50ms (inmediato) |
-| 10 usuarios | 10 | ~50ms c/u |
-| 100 usuarios | 100 | ~50ms c/u |
-
-**Ventajas vs. Síncrono:**
-- No bloquea el hilo principal
-- Reintentos automáticos
-- Escalable horizontalmente (más workers)
-
-## 🛠️ Comandos Útiles
-
-```bash
-# Ver logs del worker
-tail -f logs/worker.log
-
-# Ver cola de Redis
-redis-cli
-> LLEN bull:facturacion:wait
-> LLEN bull:facturacion:active
-
-# Reintentar jobs fallidos
-node -e "
-const { facturaQueue } = require('./queues/facturaQueue');
-(async () => {
-  const jobs = await facturaQueue.getFailed();
-  jobs.forEach(job => job.retry());
-  process.exit(0);
-})();
-"
-
-# Limpiar cola de completados
-node -e "
-const { cleanCompletedJobs } = require('./queues/facturaQueue');
-(async () => {
-  const { facturaQueue } = require('./queues/facturaQueue');
-  await cleanCompletedJobs(facturaQueue, 100);
-  process.exit(0);
-})();
-"
-```
 
 ## 📚 Recursos
 
@@ -270,7 +307,7 @@ const { cleanCompletedJobs } = require('./queues/facturaQueue');
 - [Documentación de Bull](https://docs.bullmq.io/)
 - [Redis Documentation](https://redis.io/documentation)
 
-## 📚 Librerias de código abierto
+## 📚 Librerías de código abierto
 
 - [facturacionelectronicapy-xmlgen](https://github.com/TIPS-SA/facturacionelectronicapy-xmlgen)
 - [facturacionelectronicapy-xmlsign](https://github.com/marcosjara/facturacionelectronicapy-xmlsign)
