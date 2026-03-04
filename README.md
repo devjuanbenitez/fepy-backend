@@ -77,7 +77,7 @@ npm run worker
 ### Enviar Factura (Asíncrono)
 
 ```bash
-POST /get_einvoice
+POST /api/facturar/crear
 Authorization: Bearer <API_KEY>
 
 {
@@ -228,24 +228,38 @@ GET /api/queue/stats
 
 ## 🔧 Configuración
 
-### Variables de Entorno (.env)
+### Desarrollo (Mock-SET)
 
 ```bash
-# Servidor
-PORT=8081
-NODE_ENV=development
-
-# MongoDB
-MONGODB_URI=mongodb://localhost:27017/sifen_db
-
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# Mock SET (desarrollo) simulador de servidor
-MOCK_DEBUG=true
-MOCK_SET_URL=http://localhost:8082
+# .env
+SIFEN_USAR_MOCK=true
+SIFEN_MOCK_URL=http://localhost:8082
 ```
+```javascript
+// El código usa automáticamente el mock
+const setApi = require('./services/setapi-wrapper');
+await setApi.recibe(id, xml, 'test', certPath, password);
+```
+
+### Producción (SET Real)
+
+```bash
+# .env
+SIFEN_USAR_MOCK=false
+SIFEN_AMBIENTE=test  # o 'prod'
+```
+
+```javascript
+// El código usa automáticamente la SET real
+const setApi = require('./services/setapi-wrapper');
+await setApi.recibe(id, xml, 'test', certPath, password);
+```
+## 📋 Variables de Entorno
+
+| Variable | Descripción | Valores | Default |
+|----------|-------------|---------|---------|
+| `SIFEN_USAR_MOCK` | Usar Mock-SET en lugar de SET Real | `true` \| `false` | `false` |
+| `SIFEN_MOCK_URL` | URL del servidor Mock-SET | URL válida | `http://localhost:8082` |
 
 ## 📊 Estados de una Factura
 
