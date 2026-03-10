@@ -70,7 +70,7 @@ function normalizarDatetime(datetimeStr, formatoSIFEN = false) {
 function normalizarFechasEnObjeto(obj) {
   if (!obj || typeof obj !== 'object') return obj;
 
-  const camposFecha = ['fecha', 'fecha_nacimiento', 'fecha_emision', 'fecha_vencimiento', 'created', 'modified'];
+  const camposFecha = ['fecha', 'fecha_nacimiento', 'fecha_emision', 'fecha_vencimiento', 'created', 'modified', 'fechaEnvio'];
 
   for (const key in obj) {
     if (obj.hasOwnProperty(key)) {
@@ -119,7 +119,7 @@ function formatoFechaSIFEN(fecha) {
 function convertirFechasASIFEN(obj) {
   if (!obj || typeof obj !== 'object') return obj;
 
-  const camposFecha = ['fecha', 'fecha_nacimiento', 'fecha_emision', 'fecha_vencimiento', 'created', 'modified'];
+  const camposFecha = ['fecha', 'fecha_nacimiento', 'fecha_emision', 'fecha_vencimiento', 'created', 'modified', 'fechaEnvio'];
 
   for (const key in obj) {
     if (obj.hasOwnProperty(key)) {

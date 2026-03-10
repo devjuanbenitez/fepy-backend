@@ -281,7 +281,13 @@ exports.generarFactura = async (req, res) => {
     invoice.codigoRetorno = codigoRetorno;
     invoice.mensajeRetorno = mensajeRetorno;
     invoice.cdc = cdc;
-    invoice.fechaEnvio = new Date();
+    // Respetar fechaEnvio del JSON si existe, sino usar fecha actual
+    const data = datosFactura.data || datosFactura;
+    if (data.factura?.fechaEnvio) {
+      invoice.fechaEnvio = new Date(data.factura.fechaEnvio);
+    } else {
+      invoice.fechaEnvio = new Date();
+    }
 
     // Guardar respuesta completa SIFEN v150 con validación de DigestValue
     invoice.respuestaSifen = {

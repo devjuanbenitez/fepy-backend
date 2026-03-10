@@ -539,10 +539,13 @@ function completarDatosConEmpresa(datosFactura, empresa) {
     };
   }
 
-  // Factura
+  // Factura - Preservar fechaEnvio si viene en el JSON
   if (!datosCompletos.factura) {
     datosCompletos.factura = { presencia: 1 };
+  } else if (!datosCompletos.factura.presencia) {
+    datosCompletos.factura.presencia = 1;
   }
+  // NOTA: No sobrescribir fechaEnvio si ya viene en el JSON
 
   // Condición
   if (!datosCompletos.condicion) {

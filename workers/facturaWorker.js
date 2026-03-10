@@ -83,7 +83,13 @@ facturaQueue.process('generar-factura', async (job) => {
     invoice.digestValue = resultado.digestValue;
     invoice.fechaProceso = resultado.fechaProceso;
     invoice.xmlPath = resultado.xmlPath;
-    invoice.fechaEnvio = new Date();
+    // Respetar fechaEnvio del JSON si existe, sino usar fecha actual
+    const data = datosFactura.data || datosFactura;
+    if (data.factura?.fechaEnvio) {
+      invoice.fechaEnvio = new Date(data.factura.fechaEnvio);
+    } else {
+      invoice.fechaEnvio = new Date();
+    }
 
     await invoice.save();
 
