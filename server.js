@@ -53,12 +53,14 @@ const { verificarToken, verificarAdmin } = require('./middleware/auth');
 // Rutas de empresas y facturación
 const empresaRoutes = require('./routes/empresas');
 const facturarRoutes = require('./routes/facturar');
+const eventosRoutes = require('./routes/eventos');
 
 // Usar rutas
 app.use('/api/stats', statsRoutes);
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/empresas', empresaRoutes);
 app.use('/api/facturar', facturarRoutes);
+app.use('/api/eventos', eventosRoutes);
 
 // Rutas de autenticación (públicas)
 app.post('/api/auth/login', authController.login);
@@ -110,92 +112,6 @@ app.use((req, res, next) => {
 });
 
 // Las rutas se definen después de las funciones auxiliares (ver línea ~1300)
-
-// Endpoint para consultar una factura específica por número de correlativo (requiere autenticación)
-app.get('/check_invoice/:numero', verificarToken, async (req, res) => {
-  try {
-    const numeroFactura = req.params.numero;
-
-    if (!numeroFactura) {
-      res.status(400).json({ error: 'Número de factura requerido' });
-      return;
-    }
-
-    // Primero buscar en la base de datos
-    const invoiceRecord = await Invoice.findOne({ correlativo: numeroFactura });
-    
-    if (invoiceRecord) {
-      // Si existe en BD, devolver información completa
-      res.status(200).json({
-        encontrado: true,
-        enBaseDeDatos: true,
-        datos: {
-          _id: invoiceRecord._id,
-          correlativo: invoiceRecord.correlativo,
-          cdc: invoiceRecord.cdc,
-          estadoSifen: invoiceRecord.estadoSifen,
-          fechaCreacion: invoiceRecord.fechaCreacion,
-          fechaEnvio: invoiceRecord.fechaEnvio,
-          fechaProceso: invoiceRecord.fechaProceso,
-          total: invoiceRecord.total,
-          cliente: invoiceRecord.cliente
-        }
-      });
-      return;
-    }
-
-    // Si no está en BD, buscar en los archivos XML
-    const directorioSalida = path.join(__dirname, '../de_output');
-    const fileName = `factura_${numeroFactura}.xml`;
-
-    let facturaEncontrada = null;
-    let rutaFactura = null;
-
-    if (fs.existsSync(directorioSalida)) {
-      const años = fs.readdirSync(directorioSalida);
-
-      for (const year of años) {
-        const yearPath = path.join(directorioSalida, year);
-        if (fs.statSync(yearPath).isDirectory()) {
-          const meses = fs.readdirSync(yearPath);
-
-          for (const month of meses) {
-            const monthPath = path.join(yearPath, month);
-            if (fs.statSync(monthPath).isDirectory()) {
-              const archivos = fs.readdirSync(monthPath);
-
-              if (archivos.includes(fileName)) {
-                rutaFactura = path.join(monthPath, fileName);
-                facturaEncontrada = fs.readFileSync(rutaFactura, 'utf8');
-                break;
-              }
-            }
-          }
-
-          if (facturaEncontrada) break;
-        }
-      }
-    }
-
-    if (facturaEncontrada) {
-      res.status(200).json({
-        encontrado: true,
-        enBaseDeDatos: false,
-        enArchivos: true,
-        xml: facturaEncontrada
-      });
-    } else {
-      res.status(404).json({ 
-        encontrado: false,
-        error: 'Factura no encontrada', 
-        numero: numeroFactura 
-      });
-    }
-  } catch (error) {
-    console.error('Error al buscar factura:', error);
-    res.status(500).json({ error: 'Error al buscar factura' });
-  }
-});
 
 // Endpoint para consultar una factura por CDC (consulta en SIFEN a través del backend)
 app.get('/api/invoices/cdc/:cdc', async (req, res) => {
@@ -862,12 +778,12 @@ app.delete('/api/invoices/:id', async (req, res) => {
 app.post('/api/invoices/:id/refresh-status', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     console.log(`🔄 Consultando estado para factura ID: ${id}`);
 
     // Buscar la factura en la base de datos
     const invoiceRecord = await Invoice.findById(id);
-    
+
     if (!invoiceRecord) {
       console.log(`❌ Factura no encontrada: ${id}`);
       return res.status(404).json({
@@ -875,7 +791,7 @@ app.post('/api/invoices/:id/refresh-status', async (req, res) => {
         error: 'Factura no encontrada'
       });
     }
-    
+
     if (!invoiceRecord.cdc) {
       console.log(`❌ Factura sin CDC: ${id}`);
       return res.status(400).json({
@@ -883,26 +799,57 @@ app.post('/api/invoices/:id/refresh-status', async (req, res) => {
         error: 'La factura no tiene CDC asignado'
       });
     }
-    
+
     console.log(`📋 CDC encontrado: ${invoiceRecord.cdc}, Estado actual: ${invoiceRecord.estadoSifen}`);
 
-    // Consultar a la SET para obtener el estado actual
+    // ========================================
+    // OPTIMIZACIÓN: No consultar a SET si el estado ya es final
+    // Según Manual Técnico v150, estados finales no cambian
+    // ========================================
+    const estadosFinales = ['aceptado', 'rechazado', 'error', 'observado'];
+    const esEstadoFinal = estadosFinales.includes(invoiceRecord.estadoSifen);
+
+    if (esEstadoFinal) {
+      console.log(`✅ Estado final '${invoiceRecord.estadoSifen}' - No es necesario consultar a SET`);
+      console.log(`   Los estados finales no cambian según Manual Técnico v150`);
+      
+      return res.json({
+        success: true,
+        message: 'Estado final - No se consultó a SET (no hay cambios posibles)',
+        data: {
+          facturaId: invoiceRecord._id,
+          correlativo: invoiceRecord.correlativo,
+          cdc: invoiceRecord.cdc,
+          estadoSifen: invoiceRecord.estadoSifen,
+          estadoVisual: invoiceRecord.estadoVisual,
+          codigoRetorno: invoiceRecord.codigoRetorno,
+          mensajeRetorno: invoiceRecord.mensajeRetorno,
+          fechaProceso: invoiceRecord.fechaProceso,
+          esEstadoFinal: true,
+          consultoSET: false
+        }
+      });
+    }
+
+    // ========================================
+    // ESTADO NO FINAL: Consultar a SET para obtener el estado actual
+    // ========================================
     try {
       // Obtener configuración de la empresa
       const Empresa = require('./models/Empresa');
       const empresa = await Empresa.findById(invoiceRecord.empresaId);
-      
+
       if (!empresa) {
         console.log('⚠️ No se encontró la empresa, usando configuración por defecto');
       }
 
       const idConsulta = crypto.randomBytes(16).toString('hex');
       const ambiente = empresa?.configuracionSifen?.modo || 'test';
-      
+
       // Obtener ruta y contraseña del certificado de la empresa
       let certificateP12Path = path.join(__dirname, '../certificados', 'p12', 'certificado.p12');
       let certificatePassword = '123456';
-      
+
       if (empresa?.certificado?.nombreArchivo) {
         const certificadoService = require('./services/certificadoService');
         certificateP12Path = path.join(__dirname, '../certificados', 'p12', empresa.certificado.nombreArchivo);
@@ -1145,7 +1092,9 @@ app.post('/api/invoices/:id/refresh-status', async (req, res) => {
         estadoCambio: estadoCambio,
         codigoRetorno: codigoRetorno,
         mensajeRetorno: mensajeRetorno,
-        respuestaSifen: invoiceRecord.respuestaSifen
+        respuestaSifen: invoiceRecord.respuestaSifen,
+        esEstadoFinal: estadosFinales.includes(estadoSifen),
+        consultoSET: true
       });
       
     } catch (error) {

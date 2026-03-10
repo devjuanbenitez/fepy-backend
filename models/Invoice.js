@@ -117,4 +117,16 @@ invoiceSchema.index({ facturaHash: 1 }, { unique: true });
 // Índice compuesto para búsquedas rápidas por empresa
 invoiceSchema.index({ rucEmpresa: 1, fechaCreacion: -1 });
 
+// ========================================
+// PROPIEDADES VIRTUALES
+// ========================================
+// Virtual para 'estado' como alias de 'estadoSifen' (para consistencia con la API)
+invoiceSchema.virtual('estado').get(function() {
+  return this.estadoSifen;
+});
+
+// Asegurar que los virtuales se incluyan en las respuestas JSON
+invoiceSchema.set('toJSON', { virtuals: true });
+invoiceSchema.set('toObject', { virtuals: true });
+
 module.exports = mongoose.model('Invoice', invoiceSchema);

@@ -32,8 +32,19 @@ router.get('/', async (req, res) => {
 
     const total = await Invoice.countDocuments(query);
 
+    // Transformar para asegurar que los campos visuales estén disponibles
+    const invoicesTransformadas = invoices.map(invoice => {
+      const invoiceObj = invoice.toObject();
+      return {
+        ...invoiceObj,
+        estado: invoice.estadoSifen,
+        estadoVisual: invoice.estadoVisual || 'rechazado',
+        codigoRetorno: invoice.codigoRetorno || null
+      };
+    });
+
     res.json({
-      invoices,
+      invoices: invoicesTransformadas,
       totalPages: Math.ceil(total / limit),
       currentPage: parseInt(page),
       total
@@ -57,6 +68,14 @@ router.get('/:id', async (req, res) => {
     const xmlLink = invoice.xmlPath ? `${baseUrl}/api/invoices/${invoice._id}/download-xml` : null;
     const kudeLink = invoice.kudePath ? `${baseUrl}/api/invoices/${invoice._id}/download-pdf` : null;
 
+    // Determinar si el estado es final (no necesita refresh)
+    // Según Manual Técnico v150, estados finales no cambian, pero pueden tener eventos
+    const estadosFinales = ['aceptado', 'rechazado', 'error', 'observado'];
+    const esEstadoFinal = estadosFinales.includes(invoice.estadoSifen);
+
+    // Recomendar refresh solo si no es estado final y tiene CDC
+    const recomendarRefresh = !esEstadoFinal && invoice.cdc;
+
     res.json({
       success: true,
       data: {
@@ -64,6 +83,9 @@ router.get('/:id', async (req, res) => {
         correlativo: invoice.correlativo,
         cdc: invoice.cdc || null,
         estado: invoice.estadoSifen,
+        estadoVisual: invoice.estadoVisual || 'rechazado',
+        esEstadoFinal: esEstadoFinal,
+        recomendarRefresh: recomendarRefresh,
         xmlPath: invoice.xmlPath,
         kudePath: invoice.kudePath,
         xmlLink: xmlLink,
@@ -81,9 +103,9 @@ router.get('/:id', async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -93,10 +115,30 @@ router.get('/:id/logs', async (req, res) => {
   try {
     const logs = await OperationLog.find({ invoiceId: req.params.id })
       .sort({ createdAt: -1 });
-    
+
     res.json(logs);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// Obtener eventos de una factura
+router.get('/:id/eventos', async (req, res) => {
+  try {
+    const Evento = require('../models/Evento');
+    const eventos = await Evento.find({ invoiceId: req.params.id })
+      .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      total: eventos.length,
+      eventos
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 });
 
