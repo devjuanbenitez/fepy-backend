@@ -184,9 +184,11 @@ async function enviarEvento(params) {
     const rutaCertificado = empresa.obtenerRutaCertificado();
     const contrasena = certificadoService.descifrarContrasena(empresa.certificado.contrasena);
 
+    // 🔧 IMPORTANTE: El 4to parámetro 'true' fuerza a usar Node.js en lugar de Java
+    // Java 21 en Ubuntu 24.04 corrompe el encoding UTF-8
     // La librería facturacionelectronicapy-xmlsign tiene un método específico para eventos
     // que busca el nodo "rEve" para firmar (según Manual Técnico v150)
-    const xmlFirmado = await xmlsign.signXMLEvento(xmlEvento, rutaCertificado, contrasena);
+    const xmlFirmado = await xmlsign.signXMLEvento(xmlEvento, rutaCertificado, contrasena, true);
     console.log('✅ XML del evento firmado');
 
     // ========================================

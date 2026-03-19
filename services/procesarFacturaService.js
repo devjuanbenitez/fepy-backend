@@ -150,7 +150,9 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     const rutaCertificado = empresa.obtenerRutaCertificado();
     const contrasena = certificadoService.descifrarContrasena(empresa.certificado.contrasena);
 
-    const xmlFirmado = await xmlsign.signXML(xmlGenerado, rutaCertificado, contrasena);
+    // 🔧 IMPORTANTE: El 4to parámetro 'true' fuerza a usar Node.js en lugar de Java
+    // Java 21 en Ubuntu 24.04 corrompe el encoding UTF-8
+    const xmlFirmado = await xmlsign.signXML(xmlGenerado, rutaCertificado, contrasena, true);
     console.log('✅ XML firmado exitosamente');
     
     // EXTRAER DigestValue y CDC INMEDIATAMENTE (antes de enviar a SET)
@@ -267,7 +269,14 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     const puntoStr = (datosCompletos.punto?.toString() || datosCompletos.encabezado?.idDoc?.dPunExp?.toString() || puntoEmision).padStart(3, '0');
     const numeroStr = (datosCompletos.numero?.toString() || datosCompletos.encabezado?.idDoc?.numDoc?.toString() || '0000001').padStart(7, '0');
 
-    let nombreArchivo = `${tipoDocumentoDescripcion}_${timbradoStr}-${establecimientoStr}-${puntoStr}-${numeroStr}`;
+    // Normalizar nombre del archivo (igual que KUDE: sin acentos, espacios por guiones bajos)
+    const tipoDocumentoNormalizado = tipoDocumentoDescripcion
+      .normalize('NFD')                          // Separar caracteres con acentos
+      .replace(/[\u0300-\u036f]/g, '')          // Eliminar acentos
+      .replace(/ñ/gi, 'n')                       // Reemplazar ñ por n
+      .replace(/\s+/g, '_');                     // Reemplazar espacios por guiones bajos
+
+    let nombreArchivo = `${tipoDocumentoNormalizado}_${timbradoStr}-${establecimientoStr}-${puntoStr}-${numeroStr}`;
     if (serieDelXML) {
       nombreArchivo += `-${serieDelXML}`;
     }
