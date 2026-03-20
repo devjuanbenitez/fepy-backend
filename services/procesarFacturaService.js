@@ -74,10 +74,9 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     await reportarProgreso(10);
 
     // ========================================
-    // 2. Completar datos con configuración de empresa
+    // 2. Usar datos directamente del JSON
     // ========================================
-    const data = datosFactura.data || datosFactura;
-    const datosCompletos = completarDatosConEmpresa(data, empresa);
+    const datosCompletos = datosFactura.data || datosFactura;
     await reportarProgreso(15);
 
     // ========================================
@@ -85,45 +84,28 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     // ========================================
     // NOTA: El CDC se genera automáticamente dentro de generateXMLDE()
     const param = datosFactura.param || {};
-    const timbrado = param.timbradoNumero || datosCompletos.timbrado || empresa.configuracionSifen.timbrado || '12558946';
-    const establecimiento = datosCompletos.establecimiento || '001';
+    const timbrado = param.timbradoNumero || datosCompletos.timbrado || empresa.configuracionSifen.timbrado;
 
     // Calcular fecha de timbrado (usar la del param o la de la factura)
-    let timbradoFecha = "2022-08-25";  // Por defecto
+    let timbradoFecha;  // Por defecto
     if (param.timbradoFecha) {
       timbradoFecha = param.timbradoFecha;
-    } else if (data.fecha) {
+    } else if (datosCompletos.fecha) {
       // Extraer solo la fecha (YYYY-MM-DD) sin hora ni microsegundos
-      timbradoFecha = data.fecha.split('T')[0];
+      timbradoFecha = datosCompletos.fecha.split('T')[0];
     }
 
     const params = {
       version: param.version || 150,
       ruc: param.ruc || empresa.ruc,
-      razonSocial: param.razonSocial || empresa.razonSocial || param.nombreFantasia || 'Empresa S.A.',
-      nombreFantasia: param.nombreFantasia || empresa.nombreFantasia || 'Empresa',
-      actividadesEconomicas: param.actividadesEconomicas || [{
-        codigo: "1254",
-        descripcion: "Desarrollo de Software"
-      }],
+      razonSocial: param.razonSocial || empresa.razonSocial || param.nombreFantasia,
+      nombreFantasia: param.nombreFantasia || empresa.nombreFantasia,
+      actividadesEconomicas: param.actividadesEconomicas,
       timbradoNumero: timbrado,
       timbradoFecha: timbradoFecha,
-      tipoContribuyente: param.tipoContribuyente || 2,
-      tipoRegimen: param.tipoRegimen || 8,
-      establecimientos: param.establecimientos || [{
-        codigo: establecimiento,
-        denominacion: "MATRIZ",
-        direccion: param.direccion || empresa.direccion || "N/A",
-        numeroCasa: "0",
-        departamento: 11,
-        departamentoDescripcion: "ALTO PARANA",
-        distrito: 145,
-        distritoDescripcion: "CIUDAD DEL ESTE",
-        ciudad: 3432,
-        ciudadDescripcion: "PUERTO PTE.STROESSNER (MUNIC)",
-        telefono: param.telefono || empresa.telefono || "0973-527155",
-        email: param.email || empresa.email || "test@empresa.com.py"
-      }]
+      tipoContribuyente: param.tipoContribuyente,
+      tipoRegimen: param.tipoRegimen,
+      establecimientos: param.establecimientos
     };
 
     await reportarProgreso(25);
@@ -135,10 +117,7 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
 
     // CRÍTICO: Convertir TODAS las fechas a formato SIFEN antes de pasar a xmlgen
     // La librería facturacionelectronicapy-xmlgen NO acepta fechas con 'Z' o milisegundos
-    console.log('📅 Convirtiendo fechas a formato SIFEN para xmlgen...');
-    console.log('   fecha antes:', datosCompletos.fecha);
     convertirFechasASIFEN(datosCompletos);  // ← Modifica el objeto en su lugar (sin reasignar)
-    console.log('   fecha después:', datosCompletos.fecha);
 
     const xmlGenerado = await FacturaElectronicaPY.generateXMLDE(params, datosCompletos, {});
     await reportarProgreso(35);
@@ -164,7 +143,6 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
       // La estructura es: rDE > Signature > SignedInfo > Reference > DigestValue
       if (xmlFirmadoObj?.rDE?.Signature?.[0]?.SignedInfo?.[0]?.Reference?.[0]?.DigestValue?.[0]) {
         digestValueFirma = xmlFirmadoObj.rDE.Signature[0].SignedInfo[0].Reference[0].DigestValue[0];
-        console.log(`🔐 DigestValue extraído: ${digestValueFirma}`);
       } else {
         console.warn('⚠️ No se encontró DigestValue en el XML firmado');
       }
@@ -173,17 +151,10 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
       // Ejemplo: <DE Id="01036040761001001000000322026022719876543220">
       if (xmlFirmadoObj?.rDE?.DE?.[0]?.$?.Id) {
         cdcFirma = xmlFirmadoObj.rDE.DE[0].$.Id;
-        console.log(`🔢 CDC extraído (atributo Id): ${cdcFirma}`);
       } else if (xmlFirmadoObj?.['rDE:DE']?.[0]?.$?.Id) {
         cdcFirma = xmlFirmadoObj['rDE:DE'][0].$.Id;
-        console.log(`🔢 CDC extraído (atributo Id namespace): ${cdcFirma}`);
       } else {
         console.warn('⚠️ No se encontró CDC en el atributo Id del DE');
-        console.log('🔍 Estructura del XML:', Object.keys(xmlFirmadoObj));
-        // Log más detallado para debugging
-        if (xmlFirmadoObj?.rDE?.DE?.[0]) {
-          console.log('📋 DE attributes:', xmlFirmadoObj.rDE.DE[0].$);
-        }
       }
 
       // GUARDAR DigestValue y CDC EN BD INMEDIATAMENTE
@@ -199,9 +170,6 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
               ...updateData,
               estadoSifen: 'enviado'  // Cambiar a 'enviado' mientras se procesa en SET
             });
-            console.log(`✅ DigestValue y CDC guardados en BD para factura ${invoiceId}`);
-            console.log(`   DigestValue: ${digestValueFirma?.substring(0, 20)}...`);
-            console.log(`   CDC: ${cdcFirma}`);
           } else {
             console.warn('⚠️ No hay datos para guardar en BD');
           }
@@ -220,9 +188,9 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     // 6. Generar y agregar QR
     // ========================================
     console.log('📱 Generando QR...');
-    const idCSC = empresa.configuracionSifen.idCSC || '0001';
-    const CSC = empresa.configuracionSifen.csc || 'ABCD0000000000000000000000000000';
-    const ambiente = empresa.configuracionSifen.modo || 'test';
+    const idCSC = empresa.configuracionSifen.idCSC;
+    const CSC = empresa.configuracionSifen.csc;
+    const ambiente = empresa.configuracionSifen.modo;
 
     const xmlConQR = await qr.generateQR(xmlFirmado, idCSC, CSC, ambiente);
     console.log('✅ QR generado e incrustado');
@@ -235,17 +203,16 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     const fecha = new Date();
     const anio = fecha.getFullYear();
     const mes = String(fecha.getMonth() + 1).padStart(2, '0');
-    const rutaSalida = path.join(__dirname, `../de_output/${anio}/${mes}`);
+    const rutaSalida = path.join(__dirname, `../de_output/${empresa.ruc}/${anio}/${mes}`);
 
     if (!fs.existsSync(rutaSalida)) {
       fs.mkdirSync(rutaSalida, { recursive: true });
     }
 
-    const correlativo = datosCompletos.encabezado?.idDoc?.correlativo ||
-                       `${establecimiento}-001-${String(datosCompletos.numero || '0000001').padStart(7, '0')}`;
+    const correlativo = datosCompletos.encabezado?.idDoc?.correlativo;
 
     // Extraer datos del XML para el nombre del archivo
-    let tipoDocumentoDescripcion = 'Factura';
+    let tipoDocumentoDescripcion;
     let serieDelXML = null;
 
     try {
@@ -253,11 +220,9 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
       const xmlObj = await xml2js.parseStringPromise(xmlConQR);
       if (xmlObj?.rDE?.DE?.[0]?.gTimb?.[0]?.dDesTiDE?.[0]) {
         tipoDocumentoDescripcion = xmlObj.rDE.DE[0].gTimb[0].dDesTiDE[0];
-        console.log(`📋 Tipo de documento del XML: ${tipoDocumentoDescripcion}`);
       }
       if (xmlObj?.rDE?.DE?.[0]?.gInfDoc?.[0]?.gSerieNum?.[0]?.dSerieNum?.[0]) {
         serieDelXML = xmlObj.rDE.DE[0].gInfDoc[0].gSerieNum[0].dSerieNum[0];
-        console.log(`📋 Serie del XML: ${serieDelXML}`);
       }
     } catch (err) {
       console.warn('⚠️ No se pudo extraer dDesTiDE del XML:', err.message);
@@ -265,9 +230,9 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
 
     // Construir nombre del archivo
     const timbradoStr = datosCompletos.timbrado || datosCompletos.encabezado?.idDoc?.dNumTim || timbrado;
-    const establecimientoStr = (datosCompletos.establecimiento?.toString() || datosCompletos.encabezado?.idDoc?.dEst?.toString() || establecimiento).padStart(3, '0');
-    const puntoStr = (datosCompletos.punto?.toString() || datosCompletos.encabezado?.idDoc?.dPunExp?.toString() || puntoEmision).padStart(3, '0');
-    const numeroStr = (datosCompletos.numero?.toString() || datosCompletos.encabezado?.idDoc?.numDoc?.toString() || '0000001').padStart(7, '0');
+    const establecimientoStr = (datosCompletos.establecimiento?.toString() || datosCompletos.encabezado?.idDoc?.dEst?.toString() || '001').padStart(3, '0');
+    const puntoStr = (datosCompletos.punto?.toString() || datosCompletos.encabezado?.idDoc?.dPunExp?.toString() || '001').padStart(3, '0');
+    const numeroStr = (datosCompletos.numero?.toString() || datosCompletos.encabezado?.idDoc?.numDoc?.toString() || '').padStart(7, '0');
 
     // Normalizar nombre del archivo (igual que KUDE: sin acentos, espacios por guiones bajos)
     const tipoDocumentoNormalizado = tipoDocumentoDescripcion
@@ -285,7 +250,7 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     const rutaArchivo = path.join(rutaSalida, nombreArchivo);
     fs.writeFileSync(rutaArchivo, xmlConQR, 'utf8');
 
-    const xmlPathRelativo = `${anio}/${mes}/${nombreArchivo}`;
+    const xmlPathRelativo = `${empresa.ruc}/${anio}/${mes}/${nombreArchivo}`;
     console.log(`📁 XML guardado: ${rutaArchivo}`);
     await reportarProgreso(70);
 
@@ -306,7 +271,6 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
         rutaCertificado,
         contrasena
       );
-      console.log('📄 Respuesta SET recibida');
       await reportarProgreso(75);
     } catch (setErr) {
       // ⚠️ ERROR DE CONEXIÓN: No perder el XML ya generado
@@ -365,8 +329,7 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
       mensajeRetorno: mensajeRetorno,
       digestValue: digestValueFirma,  // DigestValue extraído después de firmar
       fechaProceso: fechaProceso,
-      correlativo: correlativo,
-      rutaArchivo: rutaArchivo
+      correlativo: correlativo
     };
 
   } catch (error) {
@@ -378,9 +341,6 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
 /**
  * Generar KUDE (PDF) desde XML
  * El JAR genera el PDF con el nombre: {tipoDocumento}_{timbrado}-{establecimiento}-{punto}-{numero}[-{serie}].pdf
- * Ejemplo: Factura electrónica_12345678-001-001-0000062.pdf
- * 
- * IMPORTANTE: El JAR no soporta espacios en la ruta, usamos enlace simbólico temporal
  */
 async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactura = null, empresa = null) {
   try {
@@ -392,6 +352,7 @@ async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactur
     const srcJasper =  path.join(__dirname, `../node_modules/facturacionelectronicapy-kude/dist/DE/`);
 
     const destFolder = path.join(__dirname, `../de_output`,
+                                  empresa.ruc,
                                   fechaCreacion.getFullYear().toString(),
                                   String(fechaCreacion.getMonth() + 1).padStart(2, '0'), '/');
     const jsonParam = {
@@ -414,9 +375,8 @@ async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactur
     try {
       fs.copyFileSync(xmlPath, rutaTemporal);
       archivoTemporal = rutaTemporal;
-      console.log(`📋 Archivo copiado temporalmente: ${rutaTemporal}`);
     } catch (err) {
-      console.error('❌ No se pudo copiar el archivo:', err.message);
+      console.error('❌ No se pudo copiar el archivo temporal:', err.message);
       throw err;
     }
 
@@ -438,22 +398,33 @@ async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactur
     // BUSCAR EL PDF GENERADO POR EL JAR
     // ========================================
     // El JAR genera: {TipoDocumento}_{timbrado}-{establecimiento}-{punto}-{numero}[-{serie}].pdf
-    // Ejemplo: Factura electrónica_12345678-001-001-0000001.pdf
-    
-    // Extraer timbrado del XML
-    let timbrado = '12345678';
+    // Ejemplo: Factura_electronica_12345678-001-001-0000001.pdf
+
+    // Extraer timbrado y tipo de documento del XML
+    let timbrado;
+    let tipoDocumentoDescripcion;
     try {
       const xml2js = require('xml2js');
       const xmlContent = fs.readFileSync(xmlPath, 'utf-8');
       const xmlObj = await xml2js.parseStringPromise(xmlContent);
-      
+
       if (xmlObj?.rDE?.DE?.[0]?.gTimb?.[0]?.dNumTim?.[0]) {
         timbrado = xmlObj.rDE.DE[0].gTimb[0].dNumTim[0];
+      }
+      if (xmlObj?.rDE?.DE?.[0]?.gTimb?.[0]?.dDesTiDE?.[0]) {
+        tipoDocumentoDescripcion = xmlObj.rDE.DE[0].gTimb[0].dDesTiDE[0];
       }
     } catch (err) {
       console.warn('⚠️ No se pudo extraer timbrado del XML:', err.message);
     }
-    
+
+    // Normalizar tipo de documento (igual que XML: sin acentos, espacios por guiones bajos)
+    const tipoDocumentoNormalizado = tipoDocumentoDescripcion
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/ñ/gi, 'n')
+      .replace(/\s+/g, '_');
+
     // Extraer establecimiento, punto y número DIRECTAMENTE de datosFactura
     // para evitar inconsistencias entre el correlativo y los datos reales del JSON
     let establecimientoStr, puntoStr, numeroFactura;
@@ -461,9 +432,9 @@ async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactur
     if (datosFactura) {
       // Intentar extraer de datosFactura.data (estructura ERPNext)
       const datosData = datosFactura.data || datosFactura;
-      establecimientoStr = String(datosData.establecimiento || '001').padStart(3, '0');
-      puntoStr = String(datosData.punto || '001').padStart(3, '0');
-      numeroFactura = String(datosData.numero || correlativo.split('-')[2] || '0000001').padStart(7, '0');
+      establecimientoStr = String(datosData.establecimiento).padStart(3, '0');
+      puntoStr = String(datosData.punto).padStart(3, '0');
+      numeroFactura = String(datosData.numero || correlativo.split('-')[2]).padStart(7, '0');
     } else if (correlativo.includes('-')) {
       // Fallback: formato con guiones: 001-001-0000001
       const partes = correlativo.split('-');
@@ -476,44 +447,19 @@ async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactur
       puntoStr = correlativo.substring(3, 6);
       numeroFactura = correlativo.substring(6);
     }
-    
-    // Construir nombre base del PDF
-    // Nota: El JAR usa encoding Windows-1252 para caracteres especiales
-    // "ó" se convierte en los bytes C3 B3 que se muestran como "├│" en UTF-8
-    const pdfFileNameBase = `Factura electrónica_${timbrado}-${establecimientoStr}-${puntoStr}-${numeroFactura}`;
-    
-    // Versión alternativa con el encoding que usa el JAR (UTF-8 mal interpretado)
-    // "ó" (U+00F3) en UTF-8 es C3 B3, que en Latin-1/Windows-1252 se ve como "Ã³"
-    // Pero el JAR parece usar box-drawing characters: "│" (U+2502)
-    const pdfFileNameBaseAlt = `Factura electr\u251C\u2502nica_${timbrado}-${establecimientoStr}-${puntoStr}-${numeroFactura}`;
 
-    console.log('📄 Buscando PDF generado:', pdfFileNameBase);
-    console.log('   Timbrado:', timbrado, '| Est:', establecimientoStr, '| Punto:', puntoStr, '| Número:', numeroFactura);
+    // Construir nombre del PDF (mismo formato que el XML normalizado)
+    // El JAR de KUDE genera nombres normalizados: sin acentos, espacios por guiones bajos
+    const pdfFileName = `${tipoDocumentoNormalizado}_${timbrado}-${establecimientoStr}-${puntoStr}-${numeroFactura}.pdf`;
 
-    // Buscar el PDF en la carpeta
-    const files = fs.readdirSync(destFolder);
+    const pdfPath = path.join(destFolder, pdfFileName);
     
-    // Intentar múltiples patrones de búsqueda
-    let pdfFile = files.find(f => f.endsWith('.pdf') && f.startsWith(pdfFileNameBase));
-    
-    // Si no encuentra, intentar con encoding alternativo
-    if (!pdfFile) {
-      pdfFile = files.find(f => f.endsWith('.pdf') && f.startsWith(pdfFileNameBaseAlt));
-    }
-    
-    // Si aún no encuentra, buscar por patrón flexible (timbrado y correlativo)
-    if (!pdfFile) {
-      const pattern = new RegExp(`^Factura.*_${timbrado}-${establecimientoStr}-${puntoStr}-${numeroFactura}\\.pdf$`);
-      pdfFile = files.find(f => pattern.test(f));
-    }
-
-    if (pdfFile) {
-      const pdfPath = path.join(destFolder, pdfFile);
+    if (fs.existsSync(pdfPath)) {
       console.log(`✅ KUDE generado: ${pdfPath}`);
       return pdfPath;
     } else {
-      console.warn('⚠️ Archivos en carpeta:', files.filter(f => f.endsWith('.pdf')));
-      throw new Error(`PDF no encontrado: ${pdfFileNameBase}.pdf`);
+      console.warn(`⚠️ PDF no encontrado: ${pdfPath}`);
+      throw new Error(`PDF no encontrado: ${pdfFileName}`);
     }
 
   } catch (error) {
@@ -522,89 +468,7 @@ async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactur
   }
 }
 
-/**
- * Completar datos con configuración de empresa
- */
-function completarDatosConEmpresa(datosFactura, empresa) {
-  const datosCompletos = { ...datosFactura };
-  const timbrado = empresa.configuracionSifen.timbrado || '12345678';
-  
-  // Extraer establecimiento y punto del JSON, con fallback a '001'
-  const establecimiento = String(datosFactura.data?.establecimiento || datosFactura.establecimiento || '001').padStart(3, '0');
-  const puntoEmision = String(datosFactura.data?.punto || datosFactura.punto || '001').padStart(3, '0');
-
-  // Agregar RUC de la empresa (importante para CDC)
-  datosCompletos.ruc = empresa.ruc;  // Con guión para xmlgen
-
-  // Completar campos requeridos
-  if (!datosCompletos.tipoDocumento) datosCompletos.tipoDocumento = 1;
-  if (!datosCompletos.tipoImpuesto) datosCompletos.tipoImpuesto = 1;
-  if (!datosCompletos.condicionAnticipo) datosCompletos.condicionAnticipo = 1;
-  if (!datosCompletos.condicionTipoCambio) datosCompletos.condicionTipoCambio = 1;
-  if (datosCompletos.descuentoGlobal === undefined) datosCompletos.descuentoGlobal = 0;
-  if (datosCompletos.anticipoGlobal === undefined) datosCompletos.anticipoGlobal = 0;
-  if (!datosCompletos.cambio) datosCompletos.cambio = 6700;
-
-  // Usuario
-  if (!datosCompletos.usuario) {
-    datosCompletos.usuario = {
-      documentoTipo: 1,
-      documentoNumero: "0",
-      nombre: "Sistema",
-      cargo: "Emisor"
-    };
-  }
-
-  // Factura - Preservar fechaEnvio si viene en el JSON
-  if (!datosCompletos.factura) {
-    datosCompletos.factura = { presencia: 1 };
-  } else if (!datosCompletos.factura.presencia) {
-    datosCompletos.factura.presencia = 1;
-  }
-  // NOTA: No sobrescribir fechaEnvio si ya viene en el JSON
-
-  // Condición
-  if (!datosCompletos.condicion) {
-    datosCompletos.condicion = {
-      tipo: 1,
-      entregas: [{
-        tipo: 1,
-        monto: String(datosCompletos.totalPago || 0),
-        moneda: datosCompletos.moneda || "PYG",
-        cambio: 0
-      }]
-    };
-  }
-
-  // Encabezado
-  if (!datosCompletos.encabezado) {
-    datosCompletos.encabezado = {
-      idDoc: {
-        tipDoc: datosCompletos.tipoDocumento || 1,
-        dNumTim: timbrado,
-        dEst: establecimiento,
-        dPunExp: puntoEmision,
-        numDoc: datosCompletos.numero || '0000001',
-        correlativo: `${establecimiento}${puntoEmision}${String(datosCompletos.numero || '0000001').padStart(7, '0')}`
-      },
-      infoEmi: {
-        tipoRegimen: 1,
-        contribuyente: true,
-        clasifActivEcon: 1,
-        destinoComprobante: 1,
-        sujetoExcluido: false,
-        responsableIVA: true
-      },
-      // Formato SIFEN v150: YYYY-MM-DDTHH:MM:SS (sin milisegundos ni Z)
-      fecha: formatoFechaSIFEN(datosCompletos.fecha)
-    };
-  }
-
-  return datosCompletos;
-}
-
 module.exports = {
   procesarFactura,
-  generarKUDE,
-  completarDatosConEmpresa
+  generarKUDE
 };
