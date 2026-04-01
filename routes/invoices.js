@@ -83,6 +83,7 @@ router.get('/:id', async (req, res) => {
         correlativo: invoice.correlativo,
         cdc: invoice.cdc || null,
         estado: invoice.estadoSifen,
+        proceso: invoice.proceso || null,  // Nuevo campo: null = pendiente, 'Terminado' = completado, 'Fallido' = error
         estadoVisual: invoice.estadoVisual || 'rechazado',
         esEstadoFinal: esEstadoFinal,
         recomendarRefresh: recomendarRefresh,

@@ -106,6 +106,16 @@ const invoiceSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true  // ← El hash SÍ debe ser único (combina todos los campos oficiales)
+  },
+  // ========================================
+  // CAMPO PARA CONTROL DE PROCESO
+  // ========================================
+  // Permite recrear factura cuando XML/PDF no se completó
+  proceso: {
+    type: String,
+    enum: ['Terminado', 'Fallido', null],
+    default: null,
+    index: true
   }
 }, {
   timestamps: true

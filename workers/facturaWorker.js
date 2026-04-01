@@ -91,6 +91,25 @@ facturaQueue.process('generar-factura', async (job) => {
       invoice.fechaEnvio = new Date();
     }
 
+    // Verificar que el XML se haya generado correctamente
+    // xmlPath puede ser relativa o absoluta, convertir a absoluta si es relativa
+    let xmlPathAbsoluta = resultado.xmlPath;
+    if (resultado.xmlPath && !path.isAbsolute(resultado.xmlPath)) {
+      xmlPathAbsoluta = path.join(__dirname, '../de_output', resultado.xmlPath);
+    }
+    const xmlExiste = xmlPathAbsoluta && fs.existsSync(xmlPathAbsoluta);
+
+    if (!xmlExiste) {
+      // XML no se generó o no existe → Marcar como Fallido
+      invoice.proceso = 'Fallido';
+      console.error(`❌ [WORKER] XML no existe en ${xmlPathAbsoluta}`);
+    } else {
+      // XML existe → Mantener proceso en null (se marcará después de generar PDF)
+      console.log(`✅ [WORKER] XML verificado en ${xmlPathAbsoluta}`);
+    }
+    // Si el XML existe, NO marcamos 'Terminado' todavía
+    // Se marcará después de que el PDF se genere exitosamente
+
     await invoice.save();
 
     // ========================================
@@ -188,13 +207,14 @@ facturaQueue.process('generar-factura', async (job) => {
     
   } catch (error) {
     console.error(`❌ [WORKER] Error procesando factura ${facturaId}:`, error.message);
-    
+
     // Actualizar factura con error
     if (invoice) {
       invoice.estadoSifen = 'error';
+      invoice.proceso = 'Fallido';  // Marcar como fallido para permitir reintentar
       invoice.mensajeRetorno = error.message;
       await invoice.save();
-      
+
       await OperationLog.create({
         invoiceId: invoice._id,
         tipoOperacion: 'error',
@@ -202,7 +222,7 @@ facturaQueue.process('generar-factura', async (job) => {
         estado: 'error'
       });
     }
-    
+
     // Lanzar error para que Bull reintente
     throw error;
   }
@@ -222,19 +242,43 @@ kudeQueue.process('generar-kude', async (job) => {
     // Obtener empresa para el logo
     const Empresa = require('../models/Empresa');
     const empresa = await Empresa.findById(empresaId);
-    
+
     console.log(`🏢 Empresa encontrada: ${empresa ? empresa.nombreFantasia : 'NULL'}`);
     console.log(`🖼️ URL Logo: ${empresa?.configuracionSifen?.urlLogo || 'USANDO DEFAULT'}`);
 
     const pdfPath = await generarKUDE(xmlPath, cdc, correlativo, new Date(fechaCreacion), datosFactura, empresa);
 
-    if (pdfPath && fs.existsSync(pdfPath)) {
-      // Actualizar factura con ruta del PDF
-      const invoice = await Invoice.findById(facturaId);
-      if (invoice) {
+    // Actualizar factura con resultado de generación de PDF
+    const invoice = await Invoice.findById(facturaId);
+    if (invoice) {
+      if (pdfPath && fs.existsSync(pdfPath)) {
+        // PDF generado exitosamente
         invoice.kudePath = pdfPath;
+
+        // Verificar que tanto XML como PDF existan para marcar como Terminado
+        // xmlPath puede ser relativa o absoluta, convertir a absoluta si es relativa
+        let xmlPathAbsoluta = invoice.xmlPath;
+        if (invoice.xmlPath && !path.isAbsolute(invoice.xmlPath)) {
+          xmlPathAbsoluta = path.join(__dirname, '../de_output', invoice.xmlPath);
+        }
+        const xmlExiste = xmlPathAbsoluta && fs.existsSync(xmlPathAbsoluta);
+
+        if (xmlExiste) {
+          // Ambos archivos existen → Proceso completado exitosamente
+          invoice.proceso = 'Terminado';
+          console.log(`✅ [KUDE] PDF guardado: ${pdfPath} | XML: ${xmlPathAbsoluta} | Proceso: TERMINADO`);
+        } else {
+          // PDF existe pero XML no → Fallido
+          invoice.proceso = 'Fallido';
+          console.error(`❌ [KUDE] PDF guardado pero XML no existe en ${xmlPathAbsoluta} | Proceso: FALLIDO`);
+        }
+
         await invoice.save();
-        console.log(`✅ [KUDE] PDF guardado: ${pdfPath}`);
+      } else {
+        // PDF no se pudo generar → Marcar como Fallido
+        invoice.proceso = 'Fallido';
+        await invoice.save();
+        console.error(`❌ [KUDE] No se pudo generar el PDF | Proceso: FALLIDO`);
       }
     }
 
@@ -242,6 +286,14 @@ kudeQueue.process('generar-kude', async (job) => {
 
   } catch (error) {
     console.error(`❌ [KUDE] Error generando PDF: ${error.message}`);
+    
+    // Marcar factura como Fallido si hay error
+    const invoice = await Invoice.findById(facturaId);
+    if (invoice) {
+      invoice.proceso = 'Fallido';
+      await invoice.save();
+    }
+    
     throw error;
   }
 });
