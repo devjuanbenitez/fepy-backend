@@ -44,78 +44,81 @@ async function generarXMLEvento(params) {
   const {
     cdc,
     tipoEvento,
-    descripcion,
-    rucEmisor,
-    rucReceptor,
-    usuario
+    descripcion
   } = params;
 
-  // Generar ID único para el evento (numérico, hasta 10 dígitos)
-  const idEvento = Math.floor(Math.random() * 1000000000).toString();
+  // Generar ID único para el evento (dId) y para el nodo rEve (Id="1" según referencia)
+  const idEvento = Math.floor(Math.random() * 1000000).toString();
 
-  // Fecha del evento (formato SIFEN: YYYY-MM-DDTHH:MM:SS)
+  // Fecha del evento (formato SIFEN: YYYY-MM-DDTHH:MM:SS) - Sin milisegundos ni Z
   const fechaEvento = new Date().toISOString().split('.')[0];
 
   // Versión del formato según Manual Técnico v150
   const versionFormato = '150';
 
-  // Mapear tipo de evento a código numérico según Manual Técnico v150
-  // Eventos del Emisor: 1=Cancelación, 2=Inutilización
-  // Eventos del Receptor: 10=Acuse, 11=Conformidad, 12=Disconformidad, 13=Desconocimiento
-  let codigoTipoEvento = '12'; // Default: Disconformidad
-  let nombreTipoEvento = descripcion;
-
+  // Nodo específico según el tipo de evento
+  let eventoEspecifico = '';
   switch(tipoEvento) {
     case 'cancelacion':
-      codigoTipoEvento = '1';
-      nombreTipoEvento = 'Cancelación de DTE';
-      break;
-    case 'devolucion_ajuste':
-      codigoTipoEvento = '2';
-      nombreTipoEvento = 'Devolución/Ajuste';
+      eventoEspecifico = `
+                                <rGeVeCan>
+                                    <Id>${cdc}</Id>
+                                    <mOtEve>${descripcion}</mOtEve>
+                                </rGeVeCan>`;
       break;
     case 'conformidad':
-      codigoTipoEvento = '11';
-      nombreTipoEvento = 'Conformidad del DE';
+      eventoEspecifico = `
+                                <rGeVeConf>
+                                    <Id>${cdc}</Id>
+                                    <mOtEve>${descripcion}</mOtEve>
+                                </rGeVeConf>`;
       break;
     case 'disconformidad':
-      codigoTipoEvento = '12';
-      nombreTipoEvento = 'Disconformidad del DE';
+      eventoEspecifico = `
+                                <rGeVeDisconf>
+                                    <Id>${cdc}</Id>
+                                    <mOtEve>${descripcion}</mOtEve>
+                                </rGeVeDisconf>`;
       break;
     case 'desconocimiento':
-      codigoTipoEvento = '13';
-      nombreTipoEvento = 'Desconocimiento del DE';
+      eventoEspecifico = `
+                                <rGeVeDescon>
+                                    <Id>${cdc}</Id>
+                                    <mOtEve>${descripcion}</mOtEve>
+                                </rGeVeDescon>`;
       break;
     case 'notificacion_recepcion':
-      codigoTipoEvento = '10';
-      nombreTipoEvento = 'Acuse del DE';
+      eventoEspecifico = `
+                                <rGeVeNotRec>
+                                    <Id>${cdc}</Id>
+                                    <mOtEve>${descripcion}</mOtEve>
+                                </rGeVeNotRec>`;
       break;
   }
 
-  // Estructura del evento según Manual Técnico v150 - Sección 11.5
-  // Schema XML 19: Evento_v150.xsd
-  // El XML debe tener la estructura: rEnviEventoDe > dEvReg > gGroupGesEve > rGesEve > rEve
-  // El nodo rEve es el que se firma digitalmente
-  const xmlEvento = `<?xml version="1.0" encoding="UTF-8"?>
-<rEnviEventoDe xmlns="http://ekuatia.set.gov.py/sifen/xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <dEvReg>
-    <gGroupGesEve>
-      <rGesEve xsi:schemaLocation="http://ekuatia.set.gov.py/sifen/xsd siRecepEvento_v150.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-        <rEve Id="${idEvento}">
-          <dFecFirma>${fechaEvento}</dFecFirma>
-          <dVerFor>${versionFormato}</dVerFor>
-          <dTiGDE>${codigoTipoEvento}</dTiGDE>
-          <gGroupTiEvt>
-            <rGeVeCan>
-              <Id>${cdc}</Id>
-              <mOtEve>${descripcion}</mOtEve>
-            </rGeVeCan>
-          </gGroupTiEvt>
-        </rEve>
-      </rGesEve>
-    </gGroupGesEve>
-  </dEvReg>
-</rEnviEventoDe>`;
+  // Estructura SOAP según referencia funcional proporcionada por el usuario
+  const xmlEvento = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
+    <env:Header />
+    <env:Body>
+        <rEnviEventoDe xmlns="http://ekuatia.set.gov.py/sifen/xsd">
+            <dId>${idEvento}</dId>
+            <dEvReg>
+                <gGroupGesEve xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://ekuatia.set.gov.py/sifen/xsd siRecepEvento_v150.xsd">
+                    <rGesEve>
+                        <rEve Id="1">
+                            <dFecFirma>${fechaEvento}</dFecFirma>
+                            <dVerFor>${versionFormato}</dVerFor>
+                            <gGroupTiEvt>
+                                ${eventoEspecifico.trim()}
+                            </gGroupTiEvt>
+                        </rEve>
+                    </rGesEve>
+                </gGroupGesEve>
+            </dEvReg>
+        </rEnviEventoDe>
+    </env:Body>
+</env:Envelope>`;
 
   return xmlEvento;
 }
@@ -126,22 +129,29 @@ async function generarXMLEvento(params) {
  * @returns {Promise<Object>} Resultado del envío
  */
 async function enviarEvento(params) {
-  const {
-    invoiceId,
-    tipoEvento,
-    descripcion,
-    usuario
-  } = params;
-
-  try {
-    // ========================================
-    // 1. Buscar factura y empresa
-    // ========================================
-    const invoice = await Invoice.findById(invoiceId);
-    
-    if (!invoice) {
-      throw new Error('Factura no encontrada');
-    }
+    const {
+      invoiceId,
+      cdc,
+      tipoEvento,
+      descripcion,
+      usuario
+    } = params;
+  
+    try {
+      // ========================================
+      // 1. Buscar factura y empresa
+      // ========================================
+      let invoice;
+      
+      if (invoiceId) {
+        invoice = await Invoice.findById(invoiceId);
+      } else if (cdc) {
+        invoice = await Invoice.findOne({ cdc });
+      }
+      
+      if (!invoice) {
+        throw new Error(`Factura no encontrada (${invoiceId ? 'ID: ' + invoiceId : 'CDC: ' + cdc})`);
+      }
 
     // Validar que la factura tenga CDC
     if (!invoice.cdc) {

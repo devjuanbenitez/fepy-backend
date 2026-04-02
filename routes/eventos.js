@@ -36,13 +36,13 @@ router.use(verificarToken);
  */
 router.post('/enviar', async (req, res) => {
   try {
-    const { invoiceId, tipoEvento, descripcion, usuario } = req.body;
+    const { invoiceId, cdc, tipoEvento, descripcion, usuario } = req.body;
 
     // Validaciones
-    if (!invoiceId) {
+    if (!invoiceId && !cdc) {
       return res.status(400).json({
         success: false,
-        error: 'ID de factura requerido'
+        error: 'ID de factura o CDC requerido'
       });
     }
 
@@ -79,7 +79,12 @@ router.post('/enviar', async (req, res) => {
     }
 
     // Verificar que la factura existe
-    const invoice = await Invoice.findById(invoiceId);
+    let invoice;
+    if (invoiceId) {
+      invoice = await Invoice.findById(invoiceId);
+    } else if (cdc) {
+      invoice = await Invoice.findOne({ cdc });
+    }
     
     if (!invoice) {
       return res.status(404).json({
@@ -103,6 +108,7 @@ router.post('/enviar', async (req, res) => {
     // Enviar evento
     const resultado = await eventoService.enviarEvento({
       invoiceId,
+      cdc,
       tipoEvento,
       descripcion,
       usuario: usuario || {
