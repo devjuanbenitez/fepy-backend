@@ -349,7 +349,29 @@ async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactur
 
     const fs = require('fs');
     const path = require('path');
-    const java8Path = process.env.JAVA8_HOME || process.env.JAVA_HOME || 'java';
+    let java8Path = process.env.JAVA8_HOME || process.env.JAVA_HOME || 'java';
+    
+    // Si java8Path no es solo "java" y parece ser una ruta de directorio
+    if (java8Path !== 'java') {
+      const isWindows = process.platform === 'win32';
+      const javaExecutable = isWindows ? 'java.exe' : 'java';
+      
+      // Caso 1: JAVA_HOME apunta a la raíz (común) - buscar en bin/
+      const fullPathWithBin = path.join(java8Path, 'bin', javaExecutable);
+      
+      // Caso 2: JAVA_HOME ya apunta directamente al ejecutable
+      const pathIsExecutable = java8Path.toLowerCase().endsWith(javaExecutable);
+      
+      if (fs.existsSync(fullPathWithBin)) {
+        java8Path = fullPathWithBin;
+      } else if (pathIsExecutable && fs.existsSync(java8Path)) {
+        // Mantener java8Path original
+      } else {
+        // Fallback a "java" global si la ruta configurada no existe o no es válida
+        console.warn(`⚠️ Ruta de Java no válida ("${java8Path}"), usando "java" global.`);
+        java8Path = 'java';
+      }
+    }
     const srcJasper = path.join(__dirname, `../node_modules/facturacionelectronicapy-kude/dist/DE/`);
 
     const destFolder = path.join(__dirname, `../de_output`,

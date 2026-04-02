@@ -3,6 +3,7 @@ const router = express.Router();
 const fs = require('fs');
 const path = require('path');
 const Invoice = require('../models/Invoice');
+const Empresa = require('../models/Empresa');
 const OperationLog = require('../models/OperationLog');
 const { verificarToken } = require('../middleware/auth');
 const {
@@ -10,6 +11,7 @@ const {
   extraerMensajeRetorno,
   extraerEstadoResultado
 } = require('../utils/estadoSifen');
+const { generarKUDE } = require('../services/procesarFacturaService');
 
 // Todas las rutas requieren autenticación
 router.use(verificarToken);
@@ -453,6 +455,150 @@ router.get('/:id/download-pdf', async (req, res) => {
   } catch (error) {
     console.error('Error descargando PDF:', error);
     res.status(500).json({ message: 'Error al descargar PDF' });
+  }
+});
+
+// ========================================
+// SERVICIOS POR CDC (Código de Control)
+// ========================================
+
+// Obtener estado y links de descarga por CDC
+router.get('/cdc/:cdc', async (req, res) => {
+  try {
+    const { cdc } = req.params;
+    const invoice = await Invoice.findOne({ cdc });
+
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        message: 'Factura no encontrada con el CDC proporcionado'
+      });
+    }
+
+    // Construir URLs de descarga dinámicas
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.headers['host'] || req.get('host');
+    const baseUrl = `${protocol}://${host}`;
+    
+    const xmlLink = invoice.xmlPath ? `${baseUrl}/api/invoices/${invoice._id}/download-xml` : null;
+    const kudeLink = invoice.kudePath ? `${baseUrl}/api/invoices/${invoice._id}/download-pdf` : null;
+
+    res.json({
+      success: true,
+      data: {
+        estado: invoice.estadoSifen,
+        cdc: invoice.cdc,
+        xmlLink: xmlLink,
+        kudeLink: kudeLink,
+        proceso: invoice.proceso || null
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// Regenerar KUDE (PDF) por CDC
+router.post('/cdc/:cdc/regenerate-kude', async (req, res) => {
+  try {
+    const { cdc } = req.params;
+    const invoice = await Invoice.findOne({ cdc });
+
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        message: 'Factura no encontrada para regenerar KUDE'
+      });
+    }
+
+    // Verificar que existe el XML
+    if (!invoice.xmlPath) {
+      return res.status(400).json({
+        success: false,
+        message: 'No se puede regenerar: La factura no tiene un XML asociado'
+      });
+    }
+
+    const xmlPath = path.join(__dirname, '../de_output', invoice.xmlPath);
+    if (!fs.existsSync(xmlPath)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Archivo XML físico no encontrado en el servidor'
+      });
+    }
+
+    // Obtener empresa para el logo y configuración
+    const empresa = await Empresa.findById(invoice.empresaId);
+    
+    if (!empresa) {
+      return res.status(400).json({
+        success: false,
+        message: 'No se puede regenerar: Empresa no encontrada asociada a la factura'
+      });
+    }
+
+    console.log(`🔄 [CDC:${cdc}] Iniciando regeneración de KUDE...`);
+
+    // Llamar a la función de generación del servicio
+    const pdfPath = await generarKUDE(
+      xmlPath,
+      invoice.cdc,
+      invoice.correlativo,
+      new Date(invoice.fechaCreacion),
+      invoice.datosFactura,
+      empresa
+    );
+
+    if (pdfPath) {
+      // Guardar PDF_PATH (puede ser absoluto o relativo)
+      // Para consistencia con el flujo original, guardamos la ruta relativa si es posible
+      const basePath = path.join(__dirname, '../de_output');
+      const relativePdfPath = path.relative(basePath, pdfPath).replace(/\\/g, '/');
+
+      invoice.kudePath = relativePdfPath;
+      invoice.proceso = 'Terminado';
+      await invoice.save();
+
+      // Registrar en log
+      await new OperationLog({
+        invoiceId: invoice._id,
+        tipoOperacion: 'kude_regenerado',
+        descripcion: `KUDE regenerado manualmente para CDC: ${cdc}`,
+        estado: 'success',
+        fecha: new Date(),
+        detalle: { cdc, pdfPath: relativePdfPath }
+      }).save();
+
+      // Construir URL de descarga
+      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+      const host = req.headers['host'] || req.get('host');
+      const baseUrl = `${protocol}://${host}`;
+      const kudeLink = `${baseUrl}/api/invoices/${invoice._id}/download-pdf`;
+
+      res.json({
+        success: true,
+        message: 'KUDE regenerado exitosamente',
+        kudePath: relativePdfPath,
+        kudeLink: kudeLink
+      });
+    } else {
+      invoice.proceso = 'Fallido';
+      await invoice.save();
+      
+      res.status(500).json({
+        success: false,
+        message: 'No se pudo generar el archivo PDF'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error regenerando KUDE por CDC:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
 });
 
