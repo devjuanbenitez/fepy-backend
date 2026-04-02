@@ -118,28 +118,7 @@ router.post('/crear', async (req, res) => {
     console.log(`✅ Empresa encontrada: ${empresa.nombreFantasia} (RUC: ${empresa.ruc})`);
 
     // ========================================
-    // VERIFICAR DUPLICADOS
-    // ========================================
-    const facturaHash = generarFacturaHash(datosFactura);
-    const facturaExistente = await Invoice.findOne({ facturaHash });
-
-    if (facturaExistente) {
-      return res.status(409).json({
-        success: false,
-        error: 'Factura duplicada',
-        mensaje: 'La factura con estos datos ya ha sido registrada previamente',
-        facturaId: facturaExistente._id,
-        detalles: {
-          fechaCreacion: facturaExistente.fechaCreacion,
-          correlativo: facturaExistente.correlativo,
-          estadoSifen: facturaExistente.estadoSifen,
-          cdc: facturaExistente.cdc
-        }
-      });
-    }
-
-    // ========================================
-    // CREAR REGISTRO EN BD (ESTADO: ENCOLADO)
+    // PREPARAR DATOS COMUNES
     // ========================================
     // Formato SIFEN: 001-001-0000003 (establecimiento-punto-numero)
     const correlativoCompleto = `${String(datosFactura.data?.establecimiento || datosFactura.establecimiento || '001').padStart(3, '0')}-${String(datosFactura.data?.punto || datosFactura.punto || '001').padStart(3, '0')}-${String(datosFactura.data?.numero || datosFactura.numero || '0000001').padStart(7, '0')}`;
@@ -147,6 +126,106 @@ router.post('/crear', async (req, res) => {
     const totalFactura = datosFactura.data?.totalPago || datosFactura.data?.total || datosFactura.totalPago || datosFactura.total ||
                          (datosFactura.data?.items?.reduce((sum, item) => sum + (item.precioTotal || item.precioUnitario * item.cantidad || 0), 0) || 0);
 
+    // ========================================
+    // VERIFICAR DUPLICADOS
+    // ========================================
+    const facturaHash = generarFacturaHash(datosFactura);
+    const facturaExistente = await Invoice.findOne({ facturaHash });
+
+    if (facturaExistente) {
+      // Si el proceso anterior está marcado como 'Terminado', no permitir duplicado
+      if (facturaExistente.proceso === 'Terminado') {
+        return res.status(409).json({
+          success: false,
+          error: 'Factura duplicada',
+          mensaje: 'La factura con estos datos ya ha sido registrada y completada previamente',
+          facturaId: facturaExistente._id,
+          detalles: {
+            fechaCreacion: facturaExistente.fechaCreacion,
+            correlativo: facturaExistente.correlativo,
+            estadoSifen: facturaExistente.estadoSifen,
+            cdc: facturaExistente.cdc,
+            proceso: facturaExistente.proceso
+          }
+        });
+      }
+
+      // Si el proceso está en null o 'Fallido', permitir recreación actualizando el registro existente
+      console.log(`🔄 Factura ${facturaExistente._id} con proceso '${facturaExistente.proceso}' - Permitiendo recreación`);
+
+      // Actualizar factura existente con nuevos datos
+      facturaExistente.datosFactura = datosFactura;
+      facturaExistente.estadoSifen = 'encolado';
+      facturaExistente.proceso = null;  // Resetear para nuevo intento
+      facturaExistente.fechaCreacion = new Date();
+      // Limpiar campos de proceso anterior
+      facturaExistente.cdc = null;
+      facturaExistente.xmlPath = null;
+      facturaExistente.kudePath = null;
+      facturaExistente.codigoRetorno = null;
+      facturaExistente.mensajeRetorno = null;
+      facturaExistente.digestValue = null;
+      facturaExistente.fechaProceso = null;
+      facturaExistente.respuestaSifen = {};
+
+      await facturaExistente.save();
+      console.log(`📦 Factura ${facturaExistente._id} actualizada para reintentar procesamiento`);
+
+      // Usar la factura existente (reutilizar ID)
+      const invoice = facturaExistente;
+
+      // ========================================
+      // ENCOLAR TRABAJO PARA PROCESAMIENTO ASÍNCRONO
+      // ========================================
+      const job = await facturaQueue.add('generar-factura', {
+        facturaId: invoice._id.toString(),
+        datosFactura: datosFactura,
+        empresaId: empresa._id.toString()
+      }, {
+        priority: 0,
+        // Sin jobId personalizado - Bull genera uno único automáticamente
+        // Esto permite reintentar la misma factura múltiples veces
+        removeOnComplete: true,  // Eliminar al completar para liberar el jobId
+        timeout: 300000  // 5 minutos
+      });
+
+      console.log(`📋 Job ${job.id} encolado para procesamiento`);
+
+      // ========================================
+      // RESPONDER INMEDIATAMENTE (NO BLOQUEANTE)
+      // ========================================
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+
+      return res.status(202).json({
+        success: true,
+        message: 'Factura encolada para procesamiento asíncrono (reintentando proceso fallido)',
+        data: {
+          facturaId: invoice._id,
+          correlativo: correlativoCompleto,
+          estado: 'encolado',
+          proceso: null,  // Resetear a null para nuevo intento
+          jobId: job.id,
+          reintentando: true,
+          intentoAnterior: {
+            estadoSifen: facturaExistente.estadoSifen,
+            mensajeRetorno: facturaExistente.mensajeRetorno
+          },
+          // Campos que se completarán después del procesamiento
+          cdc: null,  // Se genera cuando SET aprueba la factura
+          // URLs de descarga (disponibles cuando se generen los archivos)
+          xmlLink: `${baseUrl}/api/invoices/${invoice._id}/download-xml`,
+          kudeLink: `${baseUrl}/api/invoices/${invoice._id}/download-pdf`,
+          urls: {
+            estado: `/api/factura/estado/${invoice._id}`,
+            consulta: `/api/invoices/${invoice._id}`
+          }
+        }
+      });
+    }
+
+    // ========================================
+    // CREAR REGISTRO EN BD (ESTADO: ENCOLADO)
+    // ========================================
     // Obtener datos del cliente (soportar ambas estructuras: param/data y plana)
     const cliente = datosFactura.data?.cliente || datosFactura.cliente || {};
 
@@ -168,6 +247,7 @@ router.post('/crear', async (req, res) => {
       total: totalFactura,
       fechaCreacion: new Date(),
       estadoSifen: 'encolado',
+      proceso: null,  // Nuevo campo: null = pendiente de procesar
       datosFactura: datosFactura,
       facturaHash: facturaHash
     });
@@ -184,7 +264,8 @@ router.post('/crear', async (req, res) => {
       empresaId: empresa._id.toString()
     }, {
       priority: 0,
-      jobId: `factura-${invoice._id}`,
+      // Sin jobId personalizado - Bull genera uno único automáticamente
+      removeOnComplete: true,  // Eliminar al completar para liberar recursos
       timeout: 300000  // 5 minutos
     });
 
@@ -194,7 +275,7 @@ router.post('/crear', async (req, res) => {
     // RESPONDER INMEDIATAMENTE (NO BLOQUEANTE)
     // ========================================
     const baseUrl = `${req.protocol}://${req.get('host')}`;
-    
+
     res.status(202).json({
       success: true,
       message: 'Factura encolada para procesamiento asíncrono',
@@ -202,6 +283,7 @@ router.post('/crear', async (req, res) => {
         facturaId: invoice._id,
         correlativo: correlativoCompleto,
         estado: 'encolado',
+        proceso: null,  // Nuevo campo: null = pendiente, 'Terminado' = completado, 'Fallido' = error
         jobId: job.id,
         // Campos que se completarán después del procesamiento
         cdc: null,  // Se genera cuando SET aprueba la factura

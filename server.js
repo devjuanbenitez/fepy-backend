@@ -135,6 +135,7 @@ app.get('/api/invoices/cdc/:cdc', async (req, res) => {
           correlativo: invoiceRecord.correlativo,
           cdc: invoiceRecord.cdc,
           estadoSifen: invoiceRecord.estadoSifen,
+          proceso: invoiceRecord.proceso,  // Nuevo campo
           fechaCreacion: invoiceRecord.fechaCreacion,
           fechaEnvio: invoiceRecord.fechaEnvio,
           fechaProceso: invoiceRecord.fechaProceso,
@@ -203,6 +204,7 @@ app.get('/api/invoices', async (req, res) => {
         correlativo: f.correlativo,
         cdc: f.cdc,
         estadoSifen: f.estadoSifen,
+        proceso: f.proceso,  // Nuevo campo: null = pendiente, 'Terminado' = completado, 'Fallido' = error
         fechaCreacion: f.fechaCreacion,
         fechaEnvio: f.fechaEnvio,
         total: f.total,
@@ -694,6 +696,7 @@ app.get('/api/invoices/estado/:cdc', async (req, res) => {
       encontrado: true,
       cdc: cdc,
       estadoLocal: invoiceRecord.estadoSifen,
+      proceso: invoiceRecord.proceso,  // Nuevo campo
       estadoSET: estadoSET,
       estadoActualizado: estadoSET !== invoiceRecord.estadoSifen,
       datos: {
@@ -1089,6 +1092,7 @@ app.post('/api/invoices/:id/refresh-status', async (req, res) => {
         estadoAnterior: invoiceRecord.estadoSifen,
         estadoActual: estadoSifen,
         estadoVisual: estadoVisual,
+        proceso: invoiceRecord.proceso,  // Nuevo campo
         estadoCambio: estadoCambio,
         codigoRetorno: codigoRetorno,
         mensajeRetorno: mensajeRetorno,
