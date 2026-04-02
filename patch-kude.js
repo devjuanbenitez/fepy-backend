@@ -1,117 +1,69 @@
 /**
  * Script para parchar librerías de facturación electrónica
- * Ejecutar después de cada `npm install`
- *
+ * Ejecutar cada vez que se realice un npm install
+ * 
  * Uso: node patch-kude.js
  */
 
 const fs = require('fs');
 const path = require('path');
 
+console.log('🚀 Iniciando parcheo de librerías SIFEN...');
+
 // ========================================
-// PARCHE 0: Reemplazar CreateKude.jar (parche de normalización)
+// PARCHEO KUDE (Mantener original)
 // ========================================
 const kudeJarSource = path.join(__dirname, 'CreateKude.jar');
 const kudeJarDest = path.join(__dirname, 'node_modules/facturacionelectronicapy-kude/dist/CreateKude.jar');
-
-try {
-  if (fs.existsSync(kudeJarSource)) {
+if (fs.existsSync(kudeJarSource)) {
     fs.copyFileSync(kudeJarSource, kudeJarDest);
-    console.log('✅ CreateKude.jar parcheado (normalización de nombres)');
-    console.log('   Origen:', kudeJarSource);
-    console.log('   Destino:', kudeJarDest);
-  } else {
-    console.warn('⚠️ No se encontró CreateKude.jar en la raíz del backend');
-    console.warn('   El JAR original se mantendrá sin cambios');
-  }
-} catch (error) {
-  console.error('❌ Error al parchar CreateKude.jar:', error.message);
+    console.log('✅ KUDE JAR parcheado');
 }
 
 // ========================================
-// PARCHE 1: facturacionelectronicapy-kude
+// PARCHEO QRGEN (Linealización forzada)
 // ========================================
-const kudeIndexPath = path.join(__dirname, 'node_modules/facturacionelectronicapy-kude/dist/index.js');
+const qrGenPath = path.join(__dirname, 'node_modules/facturacionelectronicapy-qrgen/dist/QRGen.js');
+if (fs.existsSync(qrGenPath)) {
+    let content = fs.readFileSync(qrGenPath, 'utf8');
 
-// Contenido original (con 4 parámetros)
-const kudeOriginalContent = `this.generateKUDE = (java8Path, xmlSigned, urlLogo, ambiente) => {
-            return KUDEGen_1.default.generateKUDE(java8Path, xmlSigned, urlLogo, ambiente);`;
+    // Si no tiene el pretty: false, lo parchamos
+    if (!content.includes('pretty: false')) {
+        const target = 'var builder = new xml2js_1.default.Builder();';
+        const replacement = `var builder = new xml2js_1.default.Builder({
+                renderOpts: { pretty: false, indent: '', newline: '' },
+                xmldec: { version: '1.0', encoding: 'UTF-8', standalone: 'no' }
+            });`;
 
-// Contenido parcheado (con 5 parámetros)
-const kudePatchedContent = `this.generateKUDE = (java8Path, xmlSigned, srcJasper, destFolder, jsonParam) => {
-            return KUDEGen_1.default.generateKUDE(java8Path, xmlSigned, srcJasper, destFolder, jsonParam);`;
-
-// ========================================
-// PARCHE 2: facturacionelectronicapy-qrgen (opcional, por si cambia)
-// ========================================
-const qrIndexPath = path.join(__dirname, 'node_modules/facturacionelectronicapy-qrgen/dist/index.js');
-
-// Contenido original
-const qrOriginalContent = `this.generateQR = (xmlSigned, idCSC, CSC, env) => {
-            return QRGen_1.default.generateQR(xmlSigned, idCSC, CSC, env);`;
-
-// Contenido parcheado (mismo contenido, solo para verificar)
-const qrPatchedContent = `this.generateQR = (xmlSigned, idCSC, CSC, env) => {
-            return QRGen_1.default.generateQR(xmlSigned, idCSC, CSC, env);`;
-
-// ========================================
-// APLICAR PARCHE KUDE
-// ========================================
-try {
-  if (!fs.existsSync(kudeIndexPath)) {
-    console.error('❌ Error: No se encontró el archivo KUDE index.js en:', kudeIndexPath);
-    console.error('   Asegurate de haber ejecutado `npm install` en fepy-backend');
-  } else {
-    let content = fs.readFileSync(kudeIndexPath, 'utf8');
-
-    // Verificar si ya está parcheado (tiene los 5 parámetros)
-    if (content.includes('srcJasper, destFolder, jsonParam')) {
-      console.log('✓ El parche de KUDE ya está aplicado');
-    } else {
-      // Intentar parche con el contenido original conocido
-      if (content.includes(kudeOriginalContent)) {
-        content = content.replace(kudeOriginalContent, kudePatchedContent);
-        fs.writeFileSync(kudeIndexPath, content, 'utf8');
-        console.log('✅ Parche aplicado exitosamente a facturacionelectronicapy-kude');
-        console.log('   Archivo:', kudeIndexPath);
-        console.log('   Parámetros: java8Path, xmlSigned, srcJasper, destFolder, jsonParam');
-      } else {
-        // Si no coincide el contenido exacto, intentar con regex más flexible
-        // Busca cualquier versión de generateKUDE con 4 parámetros y la reemplaza con 5
-        const flexiblePattern = /this\.generateKUDE\s*=\s*\([^)]+\)\s*=>\s*\{\s*return\s+KUDEGen_1\.default\.generateKUDE\([^)]+\)/;
-        
-        if (flexiblePattern.test(content)) {
-          const flexibleReplacement = `this.generateKUDE = (java8Path, xmlSigned, srcJasper, destFolder, jsonParam) => {
-            return KUDEGen_1.default.generateKUDE(java8Path, xmlSigned, srcJasper, destFolder, jsonParam)`;
-          
-          content = content.replace(flexiblePattern, flexibleReplacement);
-          fs.writeFileSync(kudeIndexPath, content, 'utf8');
-          console.log('✅ Parche aplicado (modo flexible) a facturacionelectronicapy-kude');
-          console.log('   Archivo:', kudeIndexPath);
+        if (content.includes(target)) {
+            content = content.replace(target, replacement);
+            fs.writeFileSync(qrGenPath, content, 'utf8');
+            console.log('✅ QRGen.js linealizado (pretty: false)');
         } else {
-          console.warn('⚠️ Advertencia: El contenido del archivo KUDE no coincide con lo esperado');
-          console.warn('   Es posible que la librería haya cambiado su estructura');
-          console.warn('   Verificar archivo:', kudeIndexPath);
+            console.warn('⚠️ No se encontró la línea del builder en QRGen.js');
         }
-      }
+    } else {
+        console.log('✓ QRGen.js ya está linealizado');
     }
-  }
-} catch (error) {
-  console.error('❌ Error al aplicar el parche de KUDE:', error.message);
 }
 
 // ========================================
-// VERIFICAR PARCHE QR (opcional)
+// PARCHEO SETAPI (NormalizeXML Linealización)
 // ========================================
-try {
-  if (fs.existsSync(qrIndexPath)) {
-    let content = fs.readFileSync(qrIndexPath, 'utf8');
-    if (content.includes(qrOriginalContent)) {
-      console.log('✓ facturacionelectronicapy-qrgen está correcto (no requiere parche)');
-    } else {
-      console.warn('⚠️ Advertencia: facturacionelectronicapy-qrgen tiene una estructura diferente');
+const setPath = path.join(__dirname, 'node_modules/facturacionelectronicapy-setapi/dist/SET.js');
+if (fs.existsSync(setPath)) {
+    let content = fs.readFileSync(setPath, 'utf8');
+
+
+    // Parche 2: Limpieza de Header XML (por si acaso no está aplicado)
+    const setHeaderRegex = /xml\s*=\s*xml\.split\(\s*"\\n"\s*\)\.slice\(\s*1\s*\)\.join\(\s*"\\n"\s*\)\s*;/;
+    const setHeaderPatched = 'xml = xml.replace(/^\\s*<\\?xml[^>]*\\?>\\s*/i, "");';
+
+    if (setHeaderRegex.test(content)) {
+        content = content.replace(setHeaderRegex, setHeaderPatched);
+        fs.writeFileSync(setPath, content, 'utf8');
+        console.log('✅ SET.js corrección de header XML aplicada');
     }
-  }
-} catch (error) {
-  console.error('⚠️ Error al verificar QR:', error.message);
 }
+
+console.log('✨ Parcheo finalizado exitosamente.');

@@ -3,27 +3,54 @@
  * 
  * Este módulo centraliza la lógica de determinación de estados
  * y extracción de datos de respuestas SOAP de la SET.
+ * Soporta respuestas en formato String (XML) y Object (JSON).
  */
 
 /**
- * Extrae el código de retorno de una respuesta SOAP
- * Soporta ambos formatos: <ns2:dCodRes> (SIFEN v150) y <codigoRetorno> (genérico)
- *
- * @param {string} xmlContent - Contenido XML de la respuesta SOAP
- * @returns {string|null} Código de retorno o null si no encuentra
+ * Función auxiliar para navegar el objeto JSON y extraer valores de forma segura
+ * SIFEN usa nombres de campos con prefijos (ej: ns2:dCodRes)
  */
-function extraerCodigoRetorno(xmlContent) {
-  try {
-    // Soporta ambos formatos: SIFEN v150 (<ns2:dCodRes>) y genérico (<codigoRetorno>)
-    const match =
-      xmlContent.match(/<ns2:dCodRes>(.*?)<\/ns2:dCodRes>/) ||
-      xmlContent.match(/<dCodRes>(.*?)<\/dCodRes>/) ||
-      xmlContent.match(/<codigoRetorno>(.*?)<\/codigoRetorno>/);
+function buscarEnObjeto(obj, campo) {
+  if (!obj || typeof obj !== 'object') return null;
 
-    if (match && match[1]) {
-      return match[1].trim();
+  // 1. Buscar directamente o con prefijo ns2:
+  const valor = obj[campo] || obj[`ns2:${campo}`] || obj[`ns: ${campo}`];
+  if (valor !== undefined) {
+    if (Array.isArray(valor)) return valor[0];
+    return valor;
+  }
+
+  // 2. Búsqueda recursiva en profundidad para encontrar el primer match
+  for (const key in obj) {
+    if (typeof obj[key] === 'object') {
+      const resultadoRescursivo = buscarEnObjeto(obj[key], campo);
+      if (resultadoRescursivo !== null) return resultadoRescursivo;
     }
-    return null;
+  }
+
+  return null;
+}
+
+/**
+ * Extrae el código de retorno de una respuesta SOAP
+ * Soporta: <ns2:dCodRes>, <dCodRes>, <codigoRetorno>
+ */
+function extraerCodigoRetorno(content) {
+  if (!content) return null;
+
+  // Caso Objeto (JSON parsed)
+  if (typeof content === 'object') {
+    return buscarEnObjeto(content, 'dCodRes') || buscarEnObjeto(content, 'codigoRetorno');
+  }
+
+  // Caso String (XML raw)
+  try {
+    const match =
+      content.match(/<ns2:dCodRes>(.*?)<\/ns2:dCodRes>/) ||
+      content.match(/<dCodRes>(.*?)<\/dCodRes>/) ||
+      content.match(/<codigoRetorno>(.*?)<\/codigoRetorno>/);
+
+    return (match && match[1]) ? match[1].trim() : null;
   } catch (error) {
     console.warn('⚠️ Error al extraer código de retorno:', error.message);
     return null;
@@ -32,23 +59,21 @@ function extraerCodigoRetorno(xmlContent) {
 
 /**
  * Extrae el mensaje de retorno de una respuesta SOAP
- * Soporta ambos formatos: <ns2:dMsgRes> (SIFEN v150) y <mensajeRetorno> (genérico)
- *
- * @param {string} xmlContent - Contenido XML de la respuesta SOAP
- * @returns {string|null} Mensaje de retorno o null si no encuentra
  */
-function extraerMensajeRetorno(xmlContent) {
-  try {
-    // Soporta ambos formatos: SIFEN v150 (<ns2:dMsgRes>) y genérico (<mensajeRetorno>)
-    const match =
-      xmlContent.match(/<ns2:dMsgRes>(.*?)<\/ns2:dMsgRes>/) ||
-      xmlContent.match(/<dMsgRes>(.*?)<\/dMsgRes>/) ||
-      xmlContent.match(/<mensajeRetorno>(.*?)<\/mensajeRetorno>/);
+function extraerMensajeRetorno(content) {
+  if (!content) return null;
 
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return null;
+  if (typeof content === 'object') {
+    return buscarEnObjeto(content, 'dMsgRes') || buscarEnObjeto(content, 'mensajeRetorno');
+  }
+
+  try {
+    const match =
+      content.match(/<ns2:dMsgRes>(.*?)<\/ns2:dMsgRes>/) ||
+      content.match(/<dMsgRes>(.*?)<\/dMsgRes>/) ||
+      content.match(/<mensajeRetorno>(.*?)<\/mensajeRetorno>/);
+
+    return (match && match[1]) ? match[1].trim() : null;
   } catch (error) {
     console.warn('⚠️ Error al extraer mensaje de retorno:', error.message);
     return null;
@@ -57,23 +82,21 @@ function extraerMensajeRetorno(xmlContent) {
 
 /**
  * Extrae el estado de resultado de una respuesta SOAP
- * Soporta ambos formatos: <ns2:dEstRes> (SIFEN v150) y <estadoResultado> (genérico)
- *
- * @param {string} xmlContent - Contenido XML de la respuesta SOAP
- * @returns {string|null} Estado de resultado o null si no encuentra
  */
-function extraerEstadoResultado(xmlContent) {
-  try {
-    // Soporta ambos formatos: SIFEN v150 (<ns2:dEstRes>) y genérico (<estadoResultado>)
-    const match =
-      xmlContent.match(/<ns2:dEstRes>(.*?)<\/ns2:dEstRes>/) ||
-      xmlContent.match(/<dEstRes>(.*?)<\/dEstRes>/) ||
-      xmlContent.match(/<estadoResultado>(.*?)<\/estadoResultado>/);
+function extraerEstadoResultado(content) {
+  if (!content) return null;
 
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return null;
+  if (typeof content === 'object') {
+    return buscarEnObjeto(content, 'dEstRes') || buscarEnObjeto(content, 'estadoResultado');
+  }
+
+  try {
+    const match =
+      content.match(/<ns2:dEstRes>(.*?)<\/ns2:dEstRes>/) ||
+      content.match(/<dEstRes>(.*?)<\/dEstRes>/) ||
+      content.match(/<estadoResultado>(.*?)<\/estadoResultado>/);
+
+    return (match && match[1]) ? match[1].trim() : null;
   } catch (error) {
     console.warn('⚠️ Error al extraer estado de resultado:', error.message);
     return null;
@@ -82,23 +105,21 @@ function extraerEstadoResultado(xmlContent) {
 
 /**
  * Extrae el CDC de una respuesta SOAP
- * Soporta ambos formatos: <ns2:id> (SIFEN v150 oficial) y <cdc> (genérico)
- *
- * @param {string} xmlContent - Contenido XML de la respuesta SOAP
- * @returns {string|null} CDC o null si no encuentra
  */
-function extraerCDC(xmlContent) {
-  try {
-    // Soporta ambos formatos: SIFEN v150 (<ns2:id>) y genérico (<cdc>)
-    const match =
-      xmlContent.match(/<ns2:id>(.*?)<\/ns2:id>/) ||
-      xmlContent.match(/<id>(.*?)<\/id>/) ||
-      xmlContent.match(/<cdc>(.*?)<\/cdc>/);
+function extraerCDC(content) {
+  if (!content) return null;
 
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return null;
+  if (typeof content === 'object') {
+    return buscarEnObjeto(content, 'id') || buscarEnObjeto(content, 'cdc');
+  }
+
+  try {
+    const match =
+      content.match(/<ns2:id>(.*?)<\/ns2:id>/) ||
+      content.match(/<id>(.*?)<\/id>/) ||
+      content.match(/<cdc>(.*?)<\/cdc>/);
+
+    return (match && match[1]) ? match[1].trim() : null;
   } catch (error) {
     console.warn('⚠️ Error al extraer CDC:', error.message);
     return null;
@@ -107,23 +128,21 @@ function extraerCDC(xmlContent) {
 
 /**
  * Extrae la fecha de proceso de una respuesta SOAP
- * Soporta ambos formatos: <ns2:dFecProc> (SIFEN v150) y <fechaProceso> (genérico)
- *
- * @param {string} xmlContent - Contenido XML de la respuesta SOAP
- * @returns {string|null} Fecha de proceso o null si no encuentra
  */
-function extraerFechaProceso(xmlContent) {
-  try {
-    // Soporta ambos formatos: SIFEN v150 (<ns2:dFecProc>) y genérico (<fechaProceso>)
-    const match =
-      xmlContent.match(/<ns2:dFecProc>(.*?)<\/ns2:dFecProc>/) ||
-      xmlContent.match(/<dFecProc>(.*?)<\/dFecProc>/) ||
-      xmlContent.match(/<fechaProceso>(.*?)<\/fechaProceso>/);
+function extraerFechaProceso(content) {
+  if (!content) return null;
 
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return null;
+  if (typeof content === 'object') {
+    return buscarEnObjeto(content, 'dFecProc') || buscarEnObjeto(content, 'fechaProceso');
+  }
+
+  try {
+    const match =
+      content.match(/<ns2:dFecProc>(.*?)<\/ns2:dFecProc>/) ||
+      content.match(/<dFecProc>(.*?)<\/dFecProc>/) ||
+      content.match(/<fechaProceso>(.*?)<\/fechaProceso>/);
+
+    return (match && match[1]) ? match[1].trim() : null;
   } catch (error) {
     console.warn('⚠️ Error al extraer fecha de proceso:', error.message);
     return null;
@@ -132,23 +151,21 @@ function extraerFechaProceso(xmlContent) {
 
 /**
  * Extrae el DigestValue de una respuesta SOAP
- * Soporta ambos formatos: <ns2:dDigVal> (SIFEN v150) y <digestValue> (genérico)
- *
- * @param {string} xmlContent - Contenido XML de la respuesta SOAP
- * @returns {string|null} DigestValue o null si no encuentra
  */
-function extraerDigestValue(xmlContent) {
-  try {
-    // Soporta ambos formatos: SIFEN v150 (<ns2:dDigVal>) y genérico (<digestValue>)
-    const match =
-      xmlContent.match(/<ns2:dDigVal>(.*?)<\/ns2:dDigVal>/) ||
-      xmlContent.match(/<dDigVal>(.*?)<\/dDigVal>/) ||
-      xmlContent.match(/<digestValue>(.*?)<\/digestValue>/);
+function extraerDigestValue(content) {
+  if (!content) return null;
 
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return null;
+  if (typeof content === 'object') {
+    return buscarEnObjeto(content, 'dDigVal') || buscarEnObjeto(content, 'digestValue');
+  }
+
+  try {
+    const match =
+      content.match(/<ns2:dDigVal>(.*?)<\/ns2:dDigVal>/) ||
+      content.match(/<dDigVal>(.*?)<\/dDigVal>/) ||
+      content.match(/<digestValue>(.*?)<\/digestValue>/);
+
+    return (match && match[1]) ? match[1].trim() : null;
   } catch (error) {
     console.warn('⚠️ Error al extraer DigestValue:', error.message);
     return null;
@@ -157,139 +174,86 @@ function extraerDigestValue(xmlContent) {
 
 /**
  * Determina el estado SIFEN según el código de retorno
- * Para sistema síncrono simplificado:
- *
- * Códigos de recepción síncrona (siRecepDE) según Manual Técnico v150:
- * - 0260 = Autorización del DE satisfactoria (Aprobado - DTE) 🟢
- * - 1005 = Transmisión extemporánea (Observado) 🟠
- * - 1000-1004 = Errores de validación (Rechazado) 🔴
- *
- * Códigos de consulta (consDE) - Sección 12.3.4.3:
- * - 0420 = CDC inexistente (Rechazado) 🔴
- * - 0421 = RUC Certificado sin permiso (Error) 🔴
- * - 0422 = CDC encontrado (Aprobado) 🟢
- *
- * NOTA: El estado "observado" solo se usa para código 1005 (transmisión extemporánea).
- * NOTA: El código 0000 NO es oficial según el Manual Técnico v150.
- *
- * @param {string} codigo - Código de retorno de 4 dígitos
- * @returns {string} Estado determinado: 'aceptado', 'observado', 'rechazado'
  */
 function determinarEstadoSegunCodigo(codigo) {
   if (!codigo) return 'rechazado';
 
-  // Éxito - Autorización satisfactoria (SIFEN v150) - códigos legacy 0, 2
-  // 0422 = CDC encontrado (consulta exitosa)
+  // 0260 = Éxito / Autorización Satisfactoria
+  // 0422 = CDC Encontrado (Consulta)
   if (['0260', '0', '2', '0422'].includes(codigo)) {
     return 'aceptado';
   }
 
-  // Transmisión extemporánea - Observado (único caso donde estado = 'observado')
+  // 1005 = Transmisión extemporánea (Observado)
   if (codigo === '1005') {
     return 'observado';
   }
 
-  // Rechazado - códigos específicos (Manual Técnico v150)
-  // Incluye 0420 (CDC inexistente) y 0421 (RUC sin permiso)
-  if (['1000', '1001', '1002', '1003', '1004', '1', '0420', '0421'].includes(codigo)) {
-    return 'rechazado';
-  }
-
+  // Cualquier otro código es considerado rechazado o error
   return 'rechazado';
 }
 
 /**
- * Determina el estado visual según el código de retorno
- * El estado visual se usa para mostrar colores en el frontend
- *
- * NOTA: El código 0000 NO es oficial según el Manual Técnico v150.
- * Los estados se determinan directamente por códigos oficiales.
- *
- * @param {string} codigo - Código de retorno de 4 dígitos
- * @returns {string} Estado visual: 'aceptado', 'observado', 'rechazado'
+ * Determina el estado visual
  */
 function determinarEstadoVisual(codigo) {
-  if (!codigo) return 'rechazado';
-
-  // 0260, 0422 = Verde (Aceptado - CDC encontrado)
-  if (['0260', '0422', '0', '2'].includes(codigo)) {
-    return 'aceptado';
-  }
-
-  // 1005 = Amarillo (Observado - Transmisión extemporánea)
-  if (codigo === '1005') {
-    return 'observado';
-  }
-
-  // Otros = Rojo (Rechazado) - incluye 0420, 0421
-  return 'rechazado';
+  const estadoSifen = determinarEstadoSegunCodigo(codigo);
+  return estadoSifen; // Coinciden en este sistema
 }
 
 /**
  * Obtiene el color de Vuetify para el estado visual
- *
- * @param {string} estadoVisual - Estado visual: 'aceptado', 'observado', 'rechazado'
- * @returns {string} Color de Vuetify: 'success', 'amber', 'error'
  */
 function getColorPorEstadoVisual(estadoVisual) {
   switch (estadoVisual) {
-    case 'aceptado':
-      return 'success';  // Verde
-    case 'observado':
-      return 'amber';    // Amarillo medio oscuro
-    case 'rechazado':
-      return 'error';    // Rojo
-    default:
-      return 'info';
+    case 'aceptado': return 'success';
+    case 'observado': return 'amber';
+    case 'rechazado': return 'error';
+    default: return 'info';
   }
 }
 
 /**
  * Obtiene el mensaje descriptivo según el código de retorno
- * 
- * @param {string} codigo - Código de retorno de 4 dígitos
- * @returns {string} Mensaje descriptivo
  */
 function getMensajePorCodigo(codigo) {
   const mensajes = {
     '0260': 'Autorización del DE satisfactoria',
     '1005': 'Transmisión extemporánea del DE',
+    '0160': 'XML Mal Formado o Error de Estructura SOAP',
+    '0161': 'Firma del DE inválida o corrompida',
     '1000': 'CDC no corresponde con las informaciones del XML',
     '1001': 'CDC duplicado',
     '1002': 'Documento electrónico duplicado',
     '1003': 'DV del CDC inválido',
     '1004': 'La fecha y hora de la firma digital es adelantada',
     '0420': 'CDC inexistente - Documento no encontrado en la SET',
-    '0421': 'CDC encontrado',
+    '0422': 'CDC encontrado',
     '0': 'Procesamiento exitoso',
     '2': 'Documento aprobado',
-    '3': 'Documento en procesamiento',
     '1': 'Documento rechazado'
   };
 
-  return mensajes[codigo] || 'Estado desconocido';
+  return mensajes[codigo] || `Error SIFEN (Código: ${codigo})`;
 }
 
 /**
- * Extrae el estado del documento de una respuesta SOAP de consulta
- * Soporta formatos: <ns2:estado>, <estado>, <estadoResultado>
- * Este campo indica el estado real del documento: Aprobado/Rechazado/Pendiente
- *
- * @param {string} xmlContent - Contenido XML de la respuesta SOAP
- * @returns {string|null} Estado del documento o null si no encuentra
+ * Extrae el estado del documento de una respuesta de consulta
  */
-function extraerEstadoDocumento(xmlContent) {
-  try {
-    // El estado del documento viene en <estado> (no confundir con <dEstRes>)
-    const match =
-      xmlContent.match(/<ns2:estado>(.*?)<\/ns2:estado>/) ||
-      xmlContent.match(/<estado>(.*?)<\/estado>/) ||
-      xmlContent.match(/<estadoResultado>(.*?)<\/estadoResultado>/);
+function extraerEstadoDocumento(content) {
+  if (!content) return null;
 
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-    return null;
+  if (typeof content === 'object') {
+    return buscarEnObjeto(content, 'estado') || buscarEnObjeto(content, 'estadoResultado');
+  }
+
+  try {
+    const match =
+      content.match(/<ns2:estado>(.*?)<\/ns2:estado>/) ||
+      content.match(/<estado>(.*?)<\/estado>/) ||
+      content.match(/<estadoResultado>(.*?)<\/estadoResultado>/);
+
+    return (match && match[1]) ? match[1].trim() : null;
   } catch (error) {
     console.warn('⚠️ Error al extraer estado del documento:', error.message);
     return null;
@@ -297,7 +261,6 @@ function extraerEstadoDocumento(xmlContent) {
 }
 
 module.exports = {
-  // Funciones de extracción de SOAP
   extraerCodigoRetorno,
   extraerMensajeRetorno,
   extraerEstadoResultado,
@@ -305,8 +268,6 @@ module.exports = {
   extraerCDC,
   extraerFechaProceso,
   extraerDigestValue,
-
-  // Funciones de determinación de estados
   determinarEstadoSegunCodigo,
   determinarEstadoVisual,
   getColorPorEstadoVisual,

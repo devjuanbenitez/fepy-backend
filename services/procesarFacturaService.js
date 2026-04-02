@@ -55,7 +55,7 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     // 1. Buscar empresa y validar
     // ========================================
     await reportarProgreso(5);
-    
+
     const Empresa = require('../models/Empresa');
     const empresa = await Empresa.findById(empresaId);
     if (!empresa) {
@@ -133,7 +133,7 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     // Java 21 en Ubuntu 24.04 corrompe el encoding UTF-8
     const xmlFirmado = await xmlsign.signXML(xmlGenerado, rutaCertificado, contrasena, true);
     console.log('✅ XML firmado exitosamente');
-    
+
     // EXTRAER DigestValue y CDC INMEDIATAMENTE (antes de enviar a SET)
     try {
       const xml2js = require('xml2js');
@@ -181,7 +181,7 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
       console.warn('⚠️ No se pudo extraer datos del XML firmado:', err.message);
       console.error(err);
     }
-    
+
     await reportarProgreso(50);
 
     // ========================================
@@ -258,7 +258,7 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     // 9. Enviar a SET - AHORA EL XML YA ESTÁ GUARDADO
     // ========================================
     console.log('📤 Enviando a SET...');
-    const idDocumento = crypto.randomBytes(16).toString('hex');
+    const idDocumento = Date.now();
 
     let soapResponse = null;
     let errorEnvio = null;
@@ -277,7 +277,7 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
       errorEnvio = setErr;
       console.warn('⚠️ Error enviando a SET:', setErr.message);
       console.warn('⚠️ El XML firmado ya está guardado en:', rutaArchivo);
-      
+
       // Continuar con estado de error
       soapResponse = null;
     }
@@ -293,6 +293,7 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     let estadoSifen = 'enviado';
 
     if (soapResponse) {
+      console.log('📥 Respuesta de SET recibida, extrayendo datos...' + JSON.stringify(soapResponse));
       codigoRetorno = extraerCodigoRetorno(soapResponse);
       mensajeRetorno = extraerMensajeRetorno(soapResponse);
       digestValueRespuesta = extraerDigestValue(soapResponse);
@@ -349,12 +350,12 @@ async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactur
     const fs = require('fs');
     const path = require('path');
     const java8Path = process.env.JAVA8_HOME || process.env.JAVA_HOME || 'java';
-    const srcJasper =  path.join(__dirname, `../node_modules/facturacionelectronicapy-kude/dist/DE/`);
+    const srcJasper = path.join(__dirname, `../node_modules/facturacionelectronicapy-kude/dist/DE/`);
 
     const destFolder = path.join(__dirname, `../de_output`,
-                                  empresa.ruc,
-                                  fechaCreacion.getFullYear().toString(),
-                                  String(fechaCreacion.getMonth() + 1).padStart(2, '0'), '/');
+      empresa.ruc,
+      fechaCreacion.getFullYear().toString(),
+      String(fechaCreacion.getMonth() + 1).padStart(2, '0'), '/');
     const jsonParam = {
       ambiente: "1",
       LOGO_URL: empresa?.configuracionSifen?.urlLogo || "https://lrtv.jaranetwork.com/sites/default/files/styles/poster/public/logos/hit.png?itok=UHWpjKPdd",
@@ -370,7 +371,7 @@ async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactur
     const dirTemporal = path.dirname(xmlPath);
     const rutaTemporal = path.join(dirTemporal, nombreTemporal);
     let archivoTemporal = null;
-    
+
     // Copiar el archivo a un nombre temporal sin espacios
     try {
       fs.copyFileSync(xmlPath, rutaTemporal);
@@ -453,7 +454,7 @@ async function generarKUDE(xmlPath, cdc, correlativo, fechaCreacion, datosFactur
     const pdfFileName = `${tipoDocumentoNormalizado}_${timbrado}-${establecimientoStr}-${puntoStr}-${numeroFactura}.pdf`;
 
     const pdfPath = path.join(destFolder, pdfFileName);
-    
+
     if (fs.existsSync(pdfPath)) {
       console.log(`✅ KUDE generado: ${pdfPath}`);
       return pdfPath;
