@@ -45,6 +45,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Importar rutas
 const statsRoutes = require('./routes/stats');
+const rucRoutes = require('./routes/ruc');
 const invoiceRoutes = require('./routes/invoices');
 const authController = require('./controllers/authController');
 const apiKeyController = require('./controllers/apiKeyController');
@@ -57,6 +58,7 @@ const eventosRoutes = require('./routes/eventos');
 
 // Usar rutas
 app.use('/api/stats', statsRoutes);
+app.use('/api/ruc', rucRoutes);
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/empresas', empresaRoutes);
 app.use('/api/facturar', facturarRoutes);
@@ -113,180 +115,7 @@ app.use((req, res, next) => {
 
 // Las rutas se definen después de las funciones auxiliares (ver línea ~1300)
 
-// Endpoint para consultar una factura por CDC (consulta en SIFEN a través del backend)
-app.get('/api/invoices/cdc/:cdc', async (req, res) => {
-  try {
-    const cdc = req.params.cdc;
-
-    if (!cdc) {
-      res.status(400).json({ error: 'CDC requerido' });
-      return;
-    }
-
-    // Primero buscar en la base de datos local
-    const invoiceRecord = await Invoice.findOne({ cdc });
-    
-    if (invoiceRecord) {
-      res.status(200).json({
-        encontrado: true,
-        fuente: 'local',
-        datos: {
-          _id: invoiceRecord._id,
-          correlativo: invoiceRecord.correlativo,
-          cdc: invoiceRecord.cdc,
-          estadoSifen: invoiceRecord.estadoSifen,
-          proceso: invoiceRecord.proceso,  // Nuevo campo
-          fechaCreacion: invoiceRecord.fechaCreacion,
-          fechaEnvio: invoiceRecord.fechaEnvio,
-          fechaProceso: invoiceRecord.fechaProceso,
-          digestValue: invoiceRecord.digestValue,
-          total: invoiceRecord.total,
-          cliente: invoiceRecord.cliente,
-          xmlPath: invoiceRecord.xmlPath
-        }
-      });
-      return;
-    }
-
-    // Si no está en BD local, consultar a SIFEN
-    try {
-      const idConsulta = crypto.randomBytes(16).toString('hex');
-      const ambiente = "test";
-      const certificateP12Path = path.join(__dirname, '../certificados', 'p12', 'certificado.p12');
-      const certificatePassword = '123456';
-
-      const respuesta = await setApi.consulta(idConsulta, cdc, ambiente, certificateP12Path, certificatePassword);
-
-      res.status(200).json({
-        encontrado: true,
-        fuente: 'sifen',
-        respuesta: respuesta
-      });
-    } catch (error) {
-      res.status(404).json({
-        encontrado: false,
-        error: 'CDC no encontrado en SIFEN',
-        cdc: cdc
-      });
-    }
-  } catch (error) {
-    console.error('Error al consultar por CDC:', error);
-    res.status(500).json({ error: 'Error al consultar por CDC' });
-  }
-});
-
-// Endpoint para listar todas las facturas (con filtros opcionales)
-app.get('/api/invoices', async (req, res) => {
-  try {
-    const { estado, cdc, correlativo, cliente, limit, skip } = req.query;
-
-    // Construir filtro
-    const filtro = {};
-    if (estado) filtro.estadoSifen = estado;
-    if (cdc) filtro.cdc = new RegExp(cdc, 'i');
-    if (correlativo) filtro.correlativo = new RegExp(correlativo, 'i');
-    if (cliente) filtro['cliente.nombre'] = new RegExp(cliente, 'i');
-
-    // Opciones de paginación
-    const opciones = {
-      sort: { fechaCreacion: -1 },
-      limit: parseInt(limit) || 50,
-      skip: parseInt(skip) || 0
-    };
-
-    const facturas = await Invoice.find(filtro, null, opciones);
-
-    res.status(200).json({
-      total: facturas.length,
-      filtros: filtro,
-      facturas: facturas.map(f => ({
-        _id: f._id,
-        correlativo: f.correlativo,
-        cdc: f.cdc,
-        estadoSifen: f.estadoSifen,
-        proceso: f.proceso,  // Nuevo campo: null = pendiente, 'Terminado' = completado, 'Fallido' = error
-        fechaCreacion: f.fechaCreacion,
-        fechaEnvio: f.fechaEnvio,
-        total: f.total,
-        cliente: f.cliente
-      }))
-    });
-  } catch (error) {
-    console.error('Error al listar facturas:', error);
-    res.status(500).json({ error: 'Error al listar facturas' });
-  }
-});
-
-// Endpoint para consultar RUC a través del backend
-app.get('/api/ruc/:ruc', async (req, res) => {
-  try {
-    const ruc = req.params.ruc;
-
-    if (!ruc) {
-      res.status(400).json({ error: 'RUC requerido' });
-      return;
-    }
-
-    // Consultar a SIFEN a través del backend
-    try {
-      const idConsulta = crypto.randomBytes(16).toString('hex');
-      const ambiente = "test";
-      const certificateP12Path = path.join(__dirname, '../certificados', 'p12', 'certificado.p12');
-      const certificatePassword = '123456';
-
-      const respuesta = await setApi.consultaRuc(idConsulta, ruc, ambiente, certificateP12Path, certificatePassword);
-
-      res.status(200).json({
-        ruc: ruc,
-        encontrado: true,
-        respuesta: respuesta
-      });
-    } catch (error) {
-      res.status(404).json({
-        ruc: ruc,
-        encontrado: false,
-        error: 'RUC no encontrado o error en consulta'
-      });
-    }
-  } catch (error) {
-    console.error('Error al consultar RUC:', error);
-    res.status(500).json({ error: 'Error al consultar RUC' });
-  }
-});
-
-// Endpoint para obtener estadísticas del sistema
-app.get('/api/stats', async (req, res) => {
-  try {
-    const totalFacturas = await Invoice.countDocuments();
-    const facturasPorEstado = await Invoice.aggregate([
-      { $group: { _id: '$estadoSifen', count: { $sum: 1 } } }
-    ]);
-
-    const facturasHoy = await Invoice.countDocuments({
-      fechaCreacion: {
-        $gte: new Date(new Date().setHours(0, 0, 0, 0)),
-        $lt: new Date()
-      }
-    });
-
-    const ultimasFacturas = await Invoice.find()
-      .sort({ fechaCreacion: -1 })
-      .limit(10)
-      .select('correlativo cdc estadoSifen fechaCreacion total');
-
-    res.status(200).json({
-      totalFacturas,
-      facturasPorEstado,
-      facturasHoy,
-      ultimasFacturas,
-      uptime: process.uptime(),
-      memoria: process.memoryUsage()
-    });
-  } catch (error) {
-    console.error('Error al obtener estadísticas:', error);
-    res.status(500).json({ error: 'Error al obtener estadísticas' });
-  }
-});
+// Los endpoints de consulta (CDC, RUC, Stats) se manejan ahora en sus respectivos archivos de ruta en /routes
 
 // ========================================
 // ENDPOINT: CONSULTAR ESTADO DE FACTURA (CON COLA)
@@ -716,66 +545,7 @@ app.get('/api/invoices/estado/:cdc', async (req, res) => {
   }
 });
 
-// Endpoint para limpiar/eliminar todas las facturas de la base de datos
-app.delete('/api/invoices/clear', async (req, res) => {
-  try {
-    // Eliminar todos los documentos de la colección Invoice
-    const result = await Invoice.deleteMany({});
-    
-    // Eliminar todos los registros de operaciones
-    const logsResult = await OperationLog.deleteMany({});
-    
-    console.log(`🗑️ Base de datos limpiada: ${result.deletedCount} facturas, ${logsResult.deletedCount} registros eliminados`);
-    
-    res.status(200).json({
-      success: true,
-      message: 'Base de datos limpiada exitosamente',
-      deletedCount: result.deletedCount,
-      deletedLogs: logsResult.deletedCount
-    });
-  } catch (error) {
-    console.error('Error al limpiar base de datos:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'Error al limpiar la base de datos',
-      message: error.message 
-    });
-  }
-});
-
-// Endpoint para eliminar una factura específica por ID
-app.delete('/api/invoices/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const result = await Invoice.findByIdAndDelete(id);
-    
-    if (!result) {
-      return res.status(404).json({
-        success: false,
-        error: 'Factura no encontrada'
-      });
-    }
-    
-    // Eliminar también los logs asociados
-    await OperationLog.deleteMany({ invoiceId: id });
-    
-    console.log(`🗑️ Factura eliminada: ${id}`);
-    
-    res.status(200).json({
-      success: true,
-      message: 'Factura eliminada exitosamente',
-      deletedId: id
-    });
-  } catch (error) {
-    console.error('Error al eliminar factura:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'Error al eliminar la factura',
-      message: error.message 
-    });
-  }
-});
+// Los endpoints de eliminación se manejan ahora en invoiceRoutes
 
 // Endpoint para consultar y actualizar el estado desde la SET
 app.post('/api/invoices/:id/refresh-status', async (req, res) => {

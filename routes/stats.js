@@ -65,6 +65,8 @@ router.get('/', async (req, res) => {
       facturasHoy,
       ultimasFacturas,
       tendenciasPorDia,
+      uptime: process.uptime(),
+      memoria: process.memoryUsage(),
       fechaUltimaConsulta: new Date()
     });
   } catch (error) {

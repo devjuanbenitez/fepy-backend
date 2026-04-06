@@ -64,6 +64,16 @@ if (fs.existsSync(setPath)) {
         fs.writeFileSync(setPath, content, 'utf8');
         console.log('✅ SET.js corrección de header XML aplicada');
     }
+
+    // Parche 3: Desactivar normalizeXML en el método evento
+    const setEventoNormalizeRegex = /let soapXMLData = this\.normalizeXML\(xml\); \/\/Para el evento/;
+    const setEventoNormalizePatched = 'let soapXMLData = xml; // Para el evento (parcheado para no romper firma)';
+
+    if (setEventoNormalizeRegex.test(content)) {
+        content = content.replace(setEventoNormalizeRegex, setEventoNormalizePatched);
+        fs.writeFileSync(setPath, content, 'utf8');
+        console.log('✅ SET.js desactivada normalización en evento()');
+    }
 }
 
 console.log('✨ Parcheo finalizado exitosamente.');

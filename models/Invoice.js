@@ -40,7 +40,7 @@ const invoiceSchema = new mongoose.Schema({
   },
   estadoSifen: {
     type: String,
-    enum: ['recibido', 'procesando', 'enviado', 'aceptado', 'rechazado', 'error', 'encolado', 'observado'],
+    enum: ['recibido', 'procesando', 'enviado', 'aceptado', 'rechazado', 'error', 'encolado', 'observado', 'cancelado'],
     default: 'recibido'
   },
   fechaEnvio: {
@@ -92,7 +92,7 @@ const invoiceSchema = new mongoose.Schema({
   // Estado visual para el frontend (según código de retorno)
   estadoVisual: {
     type: String,
-    enum: ['aceptado', 'observado', 'rechazado'],
+    enum: ['aceptado', 'observado', 'rechazado', 'cancelado'],
     default: 'rechazado'
   },
   kudePath: {

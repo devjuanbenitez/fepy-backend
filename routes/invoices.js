@@ -5,7 +5,9 @@ const path = require('path');
 const Invoice = require('../models/Invoice');
 const Empresa = require('../models/Empresa');
 const OperationLog = require('../models/OperationLog');
+const crypto = require('crypto');
 const { verificarToken } = require('../middleware/auth');
+const setApi = require('../services/setapi-wrapper');
 const {
   extraerCodigoRetorno,
   extraerMensajeRetorno,
@@ -16,20 +18,26 @@ const { generarKUDE } = require('../services/procesarFacturaService');
 // Todas las rutas requieren autenticación
 router.use(verificarToken);
 
-// Obtener todas las facturas
+// Obtener todas las facturas (con filtros)
 router.get('/', async (req, res) => {
   try {
-    const { page = 1, limit = 10, estado } = req.query;
+    const { estado, cdc, correlativo, cliente, limit, skip, page } = req.query;
 
+    // Construir filtro (consolidado de server.js y invoiceRoutes)
     const query = {};
-    if (estado) {
-      query.estadoSifen = estado;
-    }
+    if (estado) query.estadoSifen = estado;
+    if (cdc) query.cdc = new RegExp(cdc, 'i');
+    if (correlativo) query.correlativo = new RegExp(correlativo, 'i');
+    if (cliente) query['cliente.nombre'] = new RegExp(cliente, 'i');
+
+    // Opciones de paginación
+    const pageSize = parseInt(limit) || 50;
+    const offset = page ? (parseInt(page) - 1) * pageSize : (parseInt(skip) || 0);
 
     const invoices = await Invoice.find(query)
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
+      .sort({ fechaCreacion: -1 })
+      .limit(pageSize)
+      .skip(offset)
       .exec();
 
     const total = await Invoice.countDocuments(query);
@@ -40,19 +48,22 @@ router.get('/', async (req, res) => {
       return {
         ...invoiceObj,
         estado: invoice.estadoSifen,
-        estadoVisual: invoice.estadoVisual || 'rechazado',
+        // Si no tiene estadoVisual, lo calculamos basado en el estadoSifen
+        estadoVisual: invoice.estadoVisual || (invoice.estadoSifen === 'error' ? 'rechazado' : invoice.estadoSifen),
         codigoRetorno: invoice.codigoRetorno || null
       };
     });
 
     res.json({
-      invoices: invoicesTransformadas,
-      totalPages: Math.ceil(total / limit),
-      currentPage: parseInt(page),
-      total
+      success: true,
+      total,
+      totalPages: Math.ceil(total / pageSize),
+      currentPage: page ? parseInt(page) : Math.floor(offset / pageSize) + 1,
+      invoices: invoicesTransformadas
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('❌ Error listando facturas:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
@@ -116,11 +127,25 @@ router.get('/:id', async (req, res) => {
 // Obtener logs de una factura
 router.get('/:id/logs', async (req, res) => {
   try {
-    const logs = await OperationLog.find({ invoiceId: req.params.id })
+    const mongoose = require('mongoose');
+    const { id } = req.params;
+
+    console.log(`🔍 [LOGS] Buscando logs para factura ID: ${id}`);
+
+    // Validar y castear ID
+    let filter = { invoiceId: id };
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      filter.invoiceId = new mongoose.Types.ObjectId(id);
+    }
+
+    const logs = await OperationLog.find(filter)
       .sort({ createdAt: -1 });
+
+    console.log(`✅ [LOGS] Se encontraron ${logs.length} logs para factura ${id}`);
 
     res.json(logs);
   } catch (error) {
+    console.error('❌ [LOGS] Error obteniendo logs:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -128,9 +153,22 @@ router.get('/:id/logs', async (req, res) => {
 // Obtener eventos de una factura
 router.get('/:id/eventos', async (req, res) => {
   try {
+    const mongoose = require('mongoose');
     const Evento = require('../models/Evento');
-    const eventos = await Evento.find({ invoiceId: req.params.id })
+    const { id } = req.params;
+
+    console.log(`🔍 [EVENTOS] Buscando eventos para factura ID: ${id}`);
+
+    // Validar y castear ID
+    let filter = { invoiceId: id };
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      filter.invoiceId = new mongoose.Types.ObjectId(id);
+    }
+
+    const eventos = await Evento.find(filter)
       .sort({ createdAt: -1 });
+
+    console.log(`✅ [EVENTOS] Se encontraron ${eventos.length} eventos para factura ${id}`);
 
     res.json({
       success: true,
@@ -138,8 +176,36 @@ router.get('/:id/eventos', async (req, res) => {
       eventos
     });
   } catch (error) {
+    console.error('❌ [EVENTOS] Error obteniendo eventos:', error);
     res.status(500).json({ 
       success: false,
+      message: error.message 
+    });
+  }
+});
+
+// Limpiar todas las facturas y logs del sistema
+router.delete('/clear', async (req, res) => {
+  try {
+    // Eliminar documentos Invoice
+    const result = await Invoice.deleteMany({});
+    
+    // Eliminar OperationLogs asociados a facturas
+    const logsResult = await OperationLog.deleteMany({});
+    
+    console.log(`🗑️ [CLEAR] Base de datos limpiada: ${result.deletedCount} facturas, ${logsResult.deletedCount} registros eliminados`);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Base de datos limpiada exitosamente',
+      deletedCount: result.deletedCount,
+      deletedLogs: logsResult.deletedCount
+    });
+  } catch (error) {
+    console.error('❌ [CLEAR] Error al limpiar base de datos:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Error al limpiar la base de datos',
       message: error.message 
     });
   }
@@ -466,34 +532,79 @@ router.get('/:id/download-pdf', async (req, res) => {
 router.get('/cdc/:cdc', async (req, res) => {
   try {
     const { cdc } = req.params;
+
+    if (!cdc) {
+      return res.status(400).json({ success: false, message: 'CDC requerido' });
+    }
+
+    // Primero consultar en la base de datos local
     const invoice = await Invoice.findOne({ cdc });
 
-    if (!invoice) {
-      return res.status(404).json({
-        success: false,
-        message: 'Factura no encontrada con el CDC proporcionado'
+    if (invoice) {
+      // Construir URLs de descarga dinámicas
+      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+      const host = req.headers['host'] || req.get('host');
+      const baseUrl = `${protocol}://${host}`;
+      
+      const xmlLink = invoice.xmlPath ? `${baseUrl}/api/invoices/${invoice._id}/download-xml` : null;
+      const kudeLink = invoice.kudePath ? `${baseUrl}/api/invoices/${invoice._id}/download-pdf` : null;
+
+      return res.json({
+        success: true,
+        encontrado: true,
+        fuente: 'local',
+        data: {
+          _id: invoice._id,
+          correlativo: invoice.correlativo,
+          cdc: invoice.cdc,
+          estado: invoice.estadoSifen,
+          proceso: invoice.proceso || null,
+          fechaCreacion: invoice.fechaCreacion,
+          fechaEnvio: invoice.fechaEnvio,
+          total: invoice.total,
+          cliente: invoice.cliente,
+          xmlLink,
+          kudeLink
+        }
       });
     }
 
-    // Construir URLs de descarga dinámicas
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-    const host = req.headers['host'] || req.get('host');
-    const baseUrl = `${protocol}://${host}`;
+    // Si no está en BD local, intentar consulta remota a SIFEN (como en el server.js original)
+    console.log(`🌐 [CDC:${cdc}] No encontrado en local. Consultando SIFEN remotamente...`);
     
-    const xmlLink = invoice.xmlPath ? `${baseUrl}/api/invoices/${invoice._id}/download-xml` : null;
-    const kudeLink = invoice.kudePath ? `${baseUrl}/api/invoices/${invoice._id}/download-pdf` : null;
-
-    res.json({
-      success: true,
-      data: {
-        estado: invoice.estadoSifen,
-        cdc: invoice.cdc,
-        xmlLink: xmlLink,
-        kudeLink: kudeLink,
-        proceso: invoice.proceso || null
+    try {
+      // Intentar obtener una empresa activa para los parámetros del certificado
+      const empresa = await Empresa.findOne({ activo: true });
+      if (!empresa) {
+        throw new Error('No hay empresas activas configuradas para realizar la consulta remota');
       }
-    });
+
+      const idConsulta = crypto.randomBytes(16).toString('hex');
+      const ambiente = empresa.configuracionSifen?.modo || 'test';
+      const rutaCertificado = empresa.obtenerRutaCertificado();
+      
+      const { descifrarContrasena } = require('../services/certificadoService');
+      const certificatePassword = descifrarContrasena(empresa.certificado.contrasena);
+
+      const respuesta = await setApi.consulta(idConsulta, cdc, ambiente, rutaCertificado, certificatePassword);
+
+      res.status(200).json({
+        success: true,
+        encontrado: true,
+        fuente: 'sifen',
+        respuesta: respuesta
+      });
+    } catch (sifenError) {
+      console.log(`❌ [CDC:${cdc}] Error en consulta SIFEN: ${sifenError.message}`);
+      res.status(404).json({
+        success: false,
+        encontrado: false,
+        error: 'CDC no encontrado en local ni en SIFEN',
+        cdc: cdc
+      });
+    }
   } catch (error) {
+    console.error('❌ Error general al consultar por CDC:', error);
     res.status(500).json({
       success: false,
       message: error.message

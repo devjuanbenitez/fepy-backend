@@ -120,7 +120,10 @@ async function generarXMLEvento(params) {
     </env:Body>
 </env:Envelope>`;
 
-  return xmlEvento;
+  return xmlEvento
+    .replace(/\r?\n|\r/g, '')     // Eliminar saltos de línea
+    .replace(/>\s+</g, '><')      // Eliminar espacios entre etiquetas
+    .trim();
 }
 
 /**
@@ -218,36 +221,46 @@ async function enviarEvento(params) {
     );
 
     console.log('📥 Respuesta de SET recibida');
+    console.log('📦 Contenido de la respuesta:', JSON.stringify(respuesta, null, 2));
 
     // ========================================
     // 5. Extraer datos de respuesta
     // ========================================
-    let codigoRetorno = '0000';
-    let mensajeRetorno = 'Evento registrado correctamente';
-    let idEventoSET = null;
+    const { 
+      extraerCodigoRetorno, 
+      extraerMensajeRetorno, 
+      extraerCDC 
+    } = require('../utils/estadoSifen');
+
+    let codigoRetorno = extraerCodigoRetorno(respuesta) || '0000';
+    let mensajeRetorno = extraerMensajeRetorno(respuesta) || 'Evento registrado correctamente';
+    let idEventoSET = extraerCDC(respuesta);
     let estadoEvento = 'registrado';
 
-    try {
-      const xml2js = require('xml2js');
-      const respuestaObj = await xml2js.parseStringPromise(respuesta);
-      
-      // Extraer de la respuesta SOAP
-      const body = respuestaObj['soap:Envelope']?.['soap:Body'];
-      if (body) {
-        const respuestaEvento = body['respuestaEvento'] || body['ns2:respuestaEvento'];
-        if (respuestaEvento) {
-          codigoRetorno = respuestaEvento['codigoRetorno']?.[0] || '0000';
-          mensajeRetorno = respuestaEvento['mensajeRetorno']?.[0] || mensajeRetorno;
-          idEventoSET = respuestaEvento['idEvento']?.[0];
-        }
-      }
+    console.log(`🔍 Extracción: codigoRetorno="${codigoRetorno}", mensajeRetorno="${mensajeRetorno}", idEventoSET="${idEventoSET}"`);
 
-      // Determinar estado según código de retorno
-      if (codigoRetorno !== '0000') {
-        estadoEvento = 'rechazado';
+    // Determinar estado según código de retorno
+    // 0000, 0, 0421 (Ya reportado), 0600 (Registrado correctamente)
+    // Usar == para permitir comparación con números si el extractor devolviera Number
+    if (codigoRetorno == '0000' || codigoRetorno == '0421' || codigoRetorno == '0' || codigoRetorno == '0600') {
+      estadoEvento = 'registrado';
+    } else {
+      estadoEvento = 'rechazado';
+    }
+
+    // Si el evento es exitoso y es de tipo cancelación, actualizar la factura
+    console.log(`🧪 Verificando éxito: estadoEvento="${estadoEvento}", tipoEvento="${tipoEvento}"`);
+    if (estadoEvento === 'registrado' && tipoEvento === 'cancelacion') {
+      try {
+        console.log(`🎯 Actualizando factura ${invoice._id} a cancelado...`);
+        const updateResult = await Invoice.findByIdAndUpdate(invoice._id, {
+          estadoSifen: 'cancelado',
+          estadoVisual: 'cancelado' 
+        }, { new: true });
+        console.log(`🚫 Factura ${invoice.correlativo} marcada como CANCELADA (Resultado: ${updateResult ? 'Éxito' : 'Fallo'})`);
+      } catch (err) {
+        console.error('⚠️ Error actualizando estado de factura a cancelado:', err.message);
       }
-    } catch (err) {
-      console.warn('⚠️ No se pudo parsear respuesta de SET:', err.message);
     }
 
     // ========================================

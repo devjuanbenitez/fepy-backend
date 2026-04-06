@@ -110,11 +110,13 @@ function extraerCDC(content) {
   if (!content) return null;
 
   if (typeof content === 'object') {
-    return buscarEnObjeto(content, 'id') || buscarEnObjeto(content, 'cdc');
+    return buscarEnObjeto(content, 'idEvento') || buscarEnObjeto(content, 'id') || buscarEnObjeto(content, 'cdc');
   }
 
   try {
     const match =
+      content.match(/<ns2:idEvento>(.*?)<\/ns2:idEvento>/) ||
+      content.match(/<idEvento>(.*?)<\/idEvento>/) ||
       content.match(/<ns2:id>(.*?)<\/ns2:id>/) ||
       content.match(/<id>(.*?)<\/id>/) ||
       content.match(/<cdc>(.*?)<\/cdc>/);
