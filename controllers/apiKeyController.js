@@ -4,7 +4,7 @@ const crypto = require('crypto');
 // Crear nueva API Key
 exports.crearApiKey = async (req, res) => {
   try {
-    const { nombre, descripcion, permisos, expiracion } = req.body;
+    const { nombre, descripcion, permisos, expiracion, empresaId } = req.body;
 
     // Validar campos requeridos
     if (!nombre) {
@@ -14,6 +14,19 @@ exports.crearApiKey = async (req, res) => {
       });
     }
 
+    // Validar empresa si se envía
+    const Empresa = require('../models/Empresa');
+    if (empresaId) {
+      const empresa = await Empresa.findOne({ _id: empresaId, usuarioId: req.usuario._id });
+      if (!empresa) {
+        return res.status(404).json({
+          success: false,
+          error: 'Empresa no encontrada o no te pertenece'
+        });
+      }
+    }
+
+
     // Crear API Key
     const apiKey = new ApiKey({
       nombre,
@@ -21,6 +34,7 @@ exports.crearApiKey = async (req, res) => {
       permisos: permisos || ['facturas:crear', 'facturas:leer', 'stats:leer'],
       expiracion: expiracion ? new Date(expiracion) : null,
       usuario: req.usuario._id,
+      empresaId: empresaId || null,
       ipOrigen: req.ip
     });
 
@@ -34,6 +48,7 @@ exports.crearApiKey = async (req, res) => {
         key: apiKey.key,  // ← Solo se muestra una vez!
         nombre: apiKey.nombre,
         descripcion: apiKey.descripcion,
+        empresaId: apiKey.empresaId,
         permisos: apiKey.permisos,
         expiracion: apiKey.expiracion,
         fechaCreacion: apiKey.fechaCreacion
@@ -55,6 +70,7 @@ exports.listarApiKeys = async (req, res) => {
   try {
     const apiKeys = await ApiKey.find({ usuario: req.usuario._id })
       .select('-keyHash')
+      .populate('empresaId', 'nombreFantasia ruc')
       .sort({ fechaCreacion: -1 });
 
     res.status(200).json({
@@ -63,6 +79,7 @@ exports.listarApiKeys = async (req, res) => {
         id: key._id,
         nombre: key.nombre,
         descripcion: key.descripcion,
+        empresa: key.empresaId ? { _id: key.empresaId._id, nombreFantasia: key.empresaId.nombreFantasia, ruc: key.empresaId.ruc } : null,
         permisos: key.permisos,
         activa: key.activa,
         expiracion: key.expiracion,
@@ -123,7 +140,9 @@ exports.obtenerApiKey = async (req, res) => {
     const apiKey = await ApiKey.findOne({ 
       _id: id, 
       usuario: req.usuario._id 
-    }).select('-keyHash');
+    })
+      .select('-keyHash')
+      .populate('empresaId', 'nombreFantasia ruc');
 
     if (!apiKey) {
       return res.status(404).json({

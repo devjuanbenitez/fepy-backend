@@ -115,6 +115,30 @@ router.post('/crear', async (req, res) => {
       });
     }
 
+    // ========================================
+    // VALIDACIÓN DE SEGURIDAD (AUTORIZACIÓN)
+    // ========================================
+    
+    // 1. JWT / Usuario dueño: Comprobar que el usuario es dueño de esta empresa
+    if (empresa.usuarioId.toString() !== req.usuario._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        error: 'Acceso Denegado',
+        mensaje: 'La empresa solicitada no está vinculada a tu cuenta de usuario.'
+      });
+    }
+
+    // 2. Restricción API Key: Si la autenticación es vía API Key, revisar si está restringida a una Empresa
+    if (req.tipoAutenticacion === 'apikey' && req.apiKey && req.apiKey.empresaId) {
+      if (req.apiKey.empresaId.toString() !== empresa._id.toString()) {
+        return res.status(403).json({
+          success: false,
+          error: 'Acceso Denegado por API Key',
+          mensaje: 'Esta API Key está restringida a otra empresa. No tiene permisos para facturar en cuenta de este RUC.'
+        });
+      }
+    }
+
     console.log(`✅ Empresa encontrada: ${empresa.nombreFantasia} (RUC: ${empresa.ruc})`);
 
     // ========================================

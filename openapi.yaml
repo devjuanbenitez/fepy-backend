@@ -1,0 +1,651 @@
+openapi: 3.0.0
+info:
+  title: FEPY Backend API
+  description: API del Sistema de Facturación Electrónica para Paraguay (Integración SIFEN)
+  version: 1.0.0
+servers:
+  - url: /api
+    description: Base URL
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+security:
+  - bearerAuth: []
+
+paths:
+  # ========================================
+  # AUTHENTICATION
+  # ========================================
+  /auth/login:
+    post:
+      summary: Login de usuario
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Login exitoso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      usuario: { type: object }
+                      token: { type: string }
+        '401':
+          description: Credenciales inválidas
+
+  /auth/perfil:
+    get:
+      summary: Obtener perfil del usuario actual
+      tags: [Auth]
+      responses:
+        '200':
+          description: Perfil del usuario
+    put:
+      summary: Actualizar perfil
+      tags: [Auth]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nombre: { type: string }
+                apellido: { type: string }
+                email: { type: string }
+      responses:
+        '200':
+          description: Perfil actualizado
+
+  /auth/cambiar-password:
+    post:
+      summary: Cambiar contraseña
+      tags: [Auth]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                passwordActual: { type: string }
+                passwordNuevo: { type: string }
+      responses:
+        '200':
+          description: Password cambiado
+
+  /auth/logout:
+    post:
+      summary: Cerrar sesión
+      tags: [Auth]
+      responses:
+        '200':
+          description: Logout exitoso
+
+  # ========================================
+  # DASHBOARD Y ESTADÍSTICAS
+  # ========================================
+  /stats:
+    get:
+      summary: Estadísticas generales del sistema
+      tags: [Stats]
+      security: []
+      responses:
+        '200':
+          description: Resumen estadístico
+          
+  # ========================================
+  # FACTURACIÓN
+  # ========================================
+  /facturar/crear:
+    post:
+      summary: Crear y encolar factura electrónica
+      tags: [Facturación]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: JSON de la factura que se enviará al SIFEN.
+              properties:
+                param: 
+                  type: object
+                  properties:
+                    ruc: { type: string, description: "RUC Emisor" }
+                data: 
+                  type: object
+      responses:
+        '202':
+          description: Factura encolada para procesamiento asíncrono
+          
+  /facturar/empresa/{ruc}:
+    get:
+      summary: Info de la empresa emisora antes de facturar
+      tags: [Facturación]
+      parameters:
+        - in: path
+          name: ruc
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Empresa encontrada
+
+  # ========================================
+  # GESTIÓN DE FACTURAS (INVOICES)
+  # ========================================
+  /invoices:
+    get:
+      summary: Listar todas las facturas
+      tags: [Invoices]
+      parameters:
+        - in: query
+          name: estado
+          schema: { type: string }
+        - in: query
+          name: cdc
+          schema: { type: string }
+        - in: query
+          name: correlativo
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Lista paginada
+          
+  /invoices/clear:
+    delete:
+      summary: Limpiar TODAS las facturas (Reset db)
+      tags: [Invoices]
+      responses:
+        '200':
+          description: OK
+          
+  /invoices/{id}:
+    get:
+      summary: Obtener detalle de factura
+      tags: [Invoices]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          
+  /invoices/{id}/logs:
+    get:
+      summary: Logs de una factura específica
+      tags: [Invoices]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Array de logs
+
+  /invoices/{id}/eventos:
+    get:
+      summary: Eventos vinculados a esta factura
+      tags: [Invoices]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Array de eventos SIFEN
+
+  /invoices/{id}/retry:
+    post:
+      summary: Reenviar XML a la SET manual
+      tags: [Invoices]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Resultado reenvío
+
+  /invoices/{id}/download-xml:
+    get:
+      summary: Descargar XML firmado de la factura
+      tags: [Invoices]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Archivo application/xml
+          
+  /invoices/{id}/download-pdf:
+    get:
+      summary: Descargar PDF KUDE de la factura
+      tags: [Invoices]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Archivo application/pdf
+          
+  /invoices/{id}/refresh-status:
+    post:
+      summary: Consulta estado en la SET y actualiza si hubo cambio
+      tags: [Invoices]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Estado refrescado
+
+  /invoices/cdc/{cdc}:
+    get:
+      summary: Obtener factura por CDC (local o remoto SIFEN)
+      tags: [Invoices]
+      parameters:
+        - in: path
+          name: cdc
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Detalle factura por CDC
+
+  /invoices/cdc/{cdc}/regenerate-kude:
+    post:
+      summary: Regenera el PDF KUDE de forma manual a partir del XML
+      tags: [Invoices]
+      parameters:
+        - in: path
+          name: cdc
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Nuevo PDF generado
+
+  /invoices/estado/{cdc}:
+    get:
+      summary: Consultar estado en SIFEN y sincronizar 
+      tags: [Invoices]
+      parameters:
+        - in: path
+          name: cdc
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Estado del documento SET
+
+  /factura/estado/{id}:
+    get:
+      summary: Consultar estado (y queue status) de una factura
+      tags: [Queue & Background]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Status
+
+  # ========================================
+  # EVENTOS SIFEN
+  # ========================================
+  /eventos:
+    get:
+      summary: Listado paginado de eventos
+      tags: [Eventos SIFEN]
+      parameters:
+        - in: query
+          name: tipoEvento
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+          
+  /eventos/enviar:
+    post:
+      summary: Enviar evento SIFEN (Ej. Disconformidad, Cancelación, Conformidad)
+      tags: [Eventos SIFEN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                invoiceId: { type: string }
+                cdc: { type: string }
+                tipoEvento: { type: string }
+                descripcion: { type: string }
+                usuario:
+                  type: object
+                  properties:
+                    nombre: { type: string }
+                    documentoNumero: { type: string }
+      responses:
+        '200':
+          description: Evento enviado exitosamente
+          
+  /eventos/factura/{invoiceId}:
+    get:
+      summary: Obtener eventos por ID Factura
+      tags: [Eventos SIFEN]
+      parameters:
+        - in: path
+          name: invoiceId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /eventos/cdc/{cdc}:
+    get:
+      summary: Obtener eventos por CDC
+      tags: [Eventos SIFEN]
+      parameters:
+        - in: path
+          name: cdc
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /eventos/{id}:
+    get:
+      summary: Detalle de evento puntual
+      tags: [Eventos SIFEN]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  # ========================================
+  # EMPRESAS EMISORAS
+  # ========================================
+  /empresas:
+    get:
+      summary: Listar empresas
+      tags: [Empresas]
+      responses:
+        '200':
+          description: OK
+    post:
+      summary: Crear empresa
+      tags: [Empresas]
+      responses:
+        '201':
+          description: Creada
+
+  /empresas/{id}:
+    get:
+      summary: Obtener Empresa
+      tags: [Empresas]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+    put:
+      summary: Actualizar Empresa
+      tags: [Empresas]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Actualizada
+    delete:
+      summary: Eliminar Empresa
+      tags: [Empresas]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Eliminada
+
+  /empresas/{id}/certificado:
+    post:
+      summary: Subir P12 Certificado a la Empresa
+      tags: [Empresas]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Certificado cargado
+          
+  /empresas/{id}/validar-certificado:
+    get:
+      summary: Valida si la empresa tiene cert y la expiración
+      tags: [Empresas]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Detalles de validez SSL
+          
+  /empresas/{id}/stats:
+    get:
+      summary: Informacion estadística de facturas de esta empresa
+      tags: [Empresas]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Stats de facturación
+
+  # ========================================
+  # RUC
+  # ========================================
+  /ruc/{ruc}:
+    get:
+      summary: Consulta contribuyente en la base de SET remotamente
+      tags: [RUC]
+      parameters:
+        - in: path
+          name: ruc
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Datos contribuyente
+
+  # ========================================
+  # API KEYS
+  # ========================================
+  /api-keys:
+    post:
+      summary: Crear API Key
+      tags: [API Keys]
+      responses:
+        '201':
+          description: Key creada, MUESTRA SOLO 1 VEZ EL TOKEN
+    get:
+      summary: Listar Api Keys (ocultas)
+      tags: [API Keys]
+      responses:
+        '200':
+          description: Array
+          
+  /api-keys/{id}:
+    get:
+      summary: Info Api key
+      tags: [API Keys]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+    delete:
+      summary: Revocar Api Key (no borra de db, desactiva)
+      tags: [API Keys]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Revocada
+          
+  /api-keys/{id}/renew:
+    put:
+      summary: Re-generar Key perdiendo el hash original
+      tags: [API Keys]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Nuevo token proporcionado
+
+  # ========================================
+  # QUEUE (Cola asíncrona de Background)
+  # ========================================
+  /queue/stats:
+    get:
+      summary: Obtener estadísticas de Bull Queue
+      tags: [Queue & Background]
+      responses:
+        '200':
+          description: Stats (active, waiting, completed, etc)
+          
+  /queue/jobs:
+    get:
+      summary: Obtener listado de Jobs recientes
+      tags: [Queue & Background]
+      responses:
+        '200':
+          description: Array
+          
+  /queue/clear:
+    post:
+      summary: Limpiar completed de una cola
+      tags: [Queue & Background]
+      responses:
+        '200':
+          description: OK
+          
+  /queue/clear-failed:
+    post:
+      summary: Limpiar Jobs fallidos
+      tags: [Queue & Background]
+      responses:
+        '200':
+          description: OK
+          
+  /queue/clear-all:
+    post:
+      summary: Borrar todo rastro de jobs en queue
+      tags: [Queue & Background]
+      responses:
+        '200':
+          description: OK
+          
+  /queue/clear-completed:
+    post:
+      summary: Alias a Clear completed
+      tags: [Queue & Background]
+      responses:
+        '200':
+          description: OK
+
+  # ========================================
+  # LOGS (Registros del sistma)
+  # ========================================
+  /logs:
+    get:
+      summary: Obtener Activity Logs paginado global
+      tags: [Logs Generales]
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer }
+        - in: query
+          name: estado
+          schema: { type: string }
+        - in: query
+          name: tipoOperacion
+          schema: { type: string }
+      responses:
+        '200':
+          description: Paginacion de operation_logs
+          
+  /logs/clear:
+    delete:
+      summary: Eliminar Operation Logs por filtro
+      tags: [Logs Generales]
+      parameters:
+        - in: query
+          name: tipo
+          schema: { type: string }
+      responses:
+        '200':
+          description: Eliminados exitosamente
+
