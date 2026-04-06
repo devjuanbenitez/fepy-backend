@@ -153,8 +153,8 @@ facturaQueue.process('generar-factura', async (job) => {
       descripcion: descripcion,
       estado: estadoLog,
       detalle: {
+        respuestaSET: resultado.respuestaSET || null,
         estadoSifen: resultado.estado,
-        estadoVisual: resultado.estadoVisual,
         codigoRetorno: resultado.codigoRetorno
       }
     });

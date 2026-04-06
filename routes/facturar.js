@@ -168,8 +168,8 @@ router.post('/crear', async (req, res) => {
             fechaCreacion: facturaExistente.fechaCreacion,
             correlativo: facturaExistente.correlativo,
             estadoSifen: facturaExistente.estadoSifen,
-            cdc: facturaExistente.cdc,
-            proceso: facturaExistente.proceso
+            cdc: facturaExistente.cdc || '',
+            proceso: facturaExistente.proceso || 'Pendiente'
           }
         });
       }
@@ -179,11 +179,12 @@ router.post('/crear', async (req, res) => {
 
       // Actualizar factura existente con nuevos datos
       facturaExistente.datosFactura = datosFactura;
+      facturaExistente.datosFactura = datosFactura;
       facturaExistente.estadoSifen = 'encolado';
-      facturaExistente.proceso = null;  // Resetear para nuevo intento
+      facturaExistente.proceso = 'Pendiente';  // Resetear para nuevo intento
       facturaExistente.fechaCreacion = new Date();
       // Limpiar campos de proceso anterior
-      facturaExistente.cdc = null;
+      facturaExistente.cdc = '';
       facturaExistente.xmlPath = null;
       facturaExistente.kudePath = null;
       facturaExistente.codigoRetorno = null;
@@ -227,7 +228,7 @@ router.post('/crear', async (req, res) => {
           facturaId: invoice._id,
           correlativo: correlativoCompleto,
           estado: 'encolado',
-          proceso: null,  // Resetear a null para nuevo intento
+          proceso: 'Pendiente',  // Resetear a Pendiente para nuevo intento
           jobId: job.id,
           reintentando: true,
           intentoAnterior: {
@@ -235,7 +236,7 @@ router.post('/crear', async (req, res) => {
             mensajeRetorno: facturaExistente.mensajeRetorno
           },
           // Campos que se completarán después del procesamiento
-          cdc: null,  // Se genera cuando SET aprueba la factura
+          cdc: '',  // Se genera cuando se procesa el XML
           // URLs de descarga (disponibles cuando se generen los archivos)
           xmlLink: `${baseUrl}/api/invoices/${invoice._id}/download-xml`,
           kudeLink: `${baseUrl}/api/invoices/${invoice._id}/download-pdf`,
@@ -271,7 +272,7 @@ router.post('/crear', async (req, res) => {
       total: totalFactura,
       fechaCreacion: new Date(),
       estadoSifen: 'encolado',
-      proceso: null,  // Nuevo campo: null = pendiente de procesar
+      proceso: 'Pendiente',  // Nuevo campo: Pendiente de procesar
       datosFactura: datosFactura,
       facturaHash: facturaHash
     });
@@ -307,10 +308,10 @@ router.post('/crear', async (req, res) => {
         facturaId: invoice._id,
         correlativo: correlativoCompleto,
         estado: 'encolado',
-        proceso: null,  // Nuevo campo: null = pendiente, 'Terminado' = completado, 'Fallido' = error
+        proceso: 'Pendiente',  // Nuevo campo: Pendiente = pendiente, 'Terminado' = completado, 'Fallido' = error
         jobId: job.id,
         // Campos que se completarán después del procesamiento
-        cdc: null,  // Se genera cuando SET aprueba la factura
+        cdc: '',  // Se genera cuando se procesa el XML
         // URLs de descarga (disponibles cuando se generen los archivos)
         xmlLink: `${baseUrl}/api/invoices/${invoice._id}/download-xml`,
         kudeLink: `${baseUrl}/api/invoices/${invoice._id}/download-pdf`,

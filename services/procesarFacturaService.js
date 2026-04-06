@@ -330,7 +330,8 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
       mensajeRetorno: mensajeRetorno,
       digestValue: digestValueFirma,  // DigestValue extraído después de firmar
       fechaProceso: fechaProceso,
-      correlativo: correlativo
+      correlativo: correlativo,
+      respuestaSET: soapResponse
     };
 
   } catch (error) {
