@@ -5,15 +5,22 @@
 
 const Queue = require('bull');
 const path = require('path');
+const Invoice = require('../models/Invoice');
 
 // Configuración de Redis
 const redisConfig = {
-  host: process.env.REDIS_HOST || 'localhost',
+  host: process.env.REDIS_HOST || '127.0.0.1',
   port: process.env.REDIS_PORT || 6379,
-  maxRetriesPerRequest: null,  // Importante para Bull
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
   retryStrategy: (times) => {
-    if (times > 3) return null;  // Dejar de reintentar después de 3 intentos
-    return Math.min(times * 200, 2000);  // Delay exponencial
+    // Nunca abandonar. Reintentar siempre, con delay creciente hasta 60 segundos.
+    const delay = Math.min(times * 1000, 60000);
+    if (times % 5 === 0) {
+      // Loggear advertencia cada 5 intentos para no saturar la consola
+      console.warn(`⚠️  [REDIS] Sin conexión. Reintento #${times} en ${delay / 1000}s... (Inicia Redis para restaurar la cola)`);
+    }
+    return delay; // Nunca devolver null = nunca crashear por falta de Redis
   }
 };
 
@@ -88,7 +95,11 @@ facturaQueue.on('stalled', (jobId) => {
 
 // Error en la cola
 facturaQueue.on('error', (err) => {
-  console.error(`💥 [FACTURA] Error en la cola: ${err.message}`);
+  if (err.message.includes('ECONNREFUSED')) {
+    console.warn(`⚠️  [REDIS] No se pudo conectar a Redis en 127.0.0.1:6379. Las colas asíncronas están pausadas.`);
+  } else {
+    console.error(`💥 [FACTURA] Error en la cola: ${err.message}`);
+  }
 });
 
 // Eventos de KUDE
@@ -105,36 +116,63 @@ kudeQueue.on('failed', (job, err) => {
 // ========================================
 
 /**
- * Obtener estadísticas de la cola
+ * Obtener estadísticas de la cola (Protección contra fallos de Redis)
  */
 async function getQueueStats() {
-  const [facturacionWaiting, facturacionActive, facturacionCompleted, facturacionFailed] = await Promise.all([
-    facturaQueue.getWaitingCount(),
-    facturaQueue.getActiveCount(),
-    facturaQueue.getCompletedCount(),
-    facturaQueue.getFailedCount()
-  ]);
+  let statsRedis = {
+    waiting: 0, active: 0, completed: 0, failed: 0
+  };
+  let statsKude = {
+    waiting: 0, active: 0, completed: 0, failed: 0
+  };
 
-  const [kudeWaiting, kudeActive, kudeCompleted, kudeFailed] = await Promise.all([
-    kudeQueue.getWaitingCount(),
-    kudeQueue.getActiveCount(),
-    kudeQueue.getCompletedCount(),
-    kudeQueue.getFailedCount()
-  ]);
+  try {
+    const [facturacionWaiting, facturacionActive, facturacionCompleted, facturacionFailed] = await Promise.all([
+      facturaQueue.getWaitingCount(),
+      facturaQueue.getActiveCount(),
+      facturaQueue.getCompletedCount(),
+      facturaQueue.getFailedCount()
+    ]);
 
-  return {
-    facturacion: {
+    statsRedis = {
       waiting: facturacionWaiting,
       active: facturacionActive,
       completed: facturacionCompleted,
       failed: facturacionFailed
-    },
-    kude: {
+    };
+
+    const [kudeWaiting, kudeActive, kudeCompleted, kudeFailed] = await Promise.all([
+      kudeQueue.getWaitingCount(),
+      kudeQueue.getActiveCount(),
+      kudeQueue.getCompletedCount(),
+      kudeQueue.getFailedCount()
+    ]);
+
+    statsKude = {
       waiting: kudeWaiting,
       active: kudeActive,
       completed: kudeCompleted,
       failed: kudeFailed
-    }
+    };
+  } catch (redisErr) {
+    // Si Redis no está disponible, no crashear, solo loggear advertencia interna
+  }
+
+  // Contar facturas estancadas en MongoDB (Esto SIEMPRE funciona si MongoDB está up)
+  let stuckCount = 0;
+  try {
+    const diezMinutosAtras = new Date(Date.now() - 10 * 60 * 1000);
+    stuckCount = await Invoice.countDocuments({
+      proceso: null,
+      createdAt: { $lt: diezMinutosAtras }
+    });
+  } catch (dbErr) {
+    console.error('❌ Error contando facturas estancadas en DB:', dbErr.message);
+  }
+
+  return {
+    facturacion: { ...statsRedis, stuck: stuckCount },
+    kude: statsKude
   };
 }
 
@@ -179,59 +217,51 @@ async function cleanAllJobs(queue) {
 }
 
 /**
- * Obtener jobs recientes de las colas
+ * Obtener jobs recientes de las colas (Protección contra fallos de Redis)
  */
 async function getRecentJobs(limit = 20) {
-  const [completed, failed, active, waiting] = await Promise.all([
-    facturaQueue.getCompleted(0, limit - 1),
-    facturaQueue.getFailed(0, limit - 1),
-    facturaQueue.getActive(0, limit - 1),
-    facturaQueue.getWaiting(0, limit - 1)
-  ]);
+  try {
+    const [completed, failed, active, waiting] = await Promise.all([
+      facturaQueue.getCompleted(0, limit - 1),
+      facturaQueue.getFailed(0, limit - 1),
+      facturaQueue.getActive(0, limit - 1),
+      facturaQueue.getWaiting(0, limit - 1)
+    ]);
 
-  // Formatear jobs con información relevante
-  const formatJob = (job, queueName = 'facturacion') => {
-    // Los datos pueden estar en diferentes niveles dependiendo de cómo se guardó el job
-    const datosFactura = job.data?.datosFactura;
-    
-    // Estructura ERPNext: datosFactura.data.ruc o datosFactura.param.ruc
-    const data = datosFactura?.data || datosFactura;
-    const param = datosFactura?.param || {};
-    
-    // Extraer RUC del cliente desde data.cliente.ruc
-    const ruc = data?.cliente?.ruc || data.ruc || param.ruc || job.data?.ruc || 'N/A';
-    
-    // Extraer número de factura
-    const numero = data.numero || job.data?.numero || 'N/A';
-    
-    // Obtener timestamp
-    const timestamp = job.finishedOn || job.processedOn || job.timestamp;
-    
-    return {
-      id: job.id,
-      queue: queueName,
-      estado: job.failedReason ? 'failed' : job.finishedOn ? 'completed' : job.processedOn ? 'active' : 'waiting',
-      correlativo: numero,
-      ruc: ruc,
-      timestamp: timestamp,
-      error: job.failedReason || null,
-      attempts: job.attemptsMade || 0
+    // Formatear jobs con información relevante
+    const formatJob = (job, queueName = 'facturacion') => {
+      const datosFactura = job.data?.datosFactura;
+      const data = datosFactura?.data || datosFactura;
+      const param = datosFactura?.param || {};
+
+      const ruc = data?.cliente?.ruc || data.ruc || param.ruc || job.data?.ruc || 'N/A';
+      const numero = data.numero || job.data?.numero || 'N/A';
+      const timestamp = job.finishedOn || job.processedOn || job.timestamp;
+
+      return {
+        id: job.id,
+        queue: queueName,
+        estado: job.failedReason ? 'failed' : job.finishedOn ? 'completed' : job.processedOn ? 'active' : 'waiting',
+        correlativo: numero,
+        ruc: ruc,
+        timestamp: timestamp,
+        error: job.failedReason || null,
+        attempts: job.attemptsMade || 0
+      };
     };
-  };
 
-  // Combinar y ordenar por fecha (más reciente primero)
-  const allJobs = [
-    ...completed.map(job => formatJob(job, 'facturacion')),
-    ...failed.map(job => formatJob(job, 'facturacion')),
-    ...active.map(job => formatJob(job, 'facturacion')),
-    ...waiting.map(job => formatJob(job, 'facturacion'))
-  ];
+    const allJobs = [
+      ...completed.map(job => formatJob(job, 'facturacion')),
+      ...failed.map(job => formatJob(job, 'facturacion')),
+      ...active.map(job => formatJob(job, 'facturacion')),
+      ...waiting.map(job => formatJob(job, 'facturacion'))
+    ];
 
-  // Ordenar por timestamp descendente
-  allJobs.sort((a, b) => b.timestamp - a.timestamp);
-
-  // Retornar los más recientes
-  return allJobs.slice(0, limit);
+    allJobs.sort((a, b) => b.timestamp - a.timestamp);
+    return allJobs.slice(0, limit);
+  } catch (err) {
+    return []; // Retornar lista vacía si Redis está down
+  }
 }
 
 /**
@@ -249,6 +279,51 @@ async function retryFailedJobs(queue, limit = 10) {
   return toRetry.length;
 }
 
+/**
+ * Busca facturas estancadas (proceso: null) y las vuelve a encolar (Protegido)
+ */
+async function repairStuckInvoices() {
+  try {
+    const diezMinutosAtras = new Date(Date.now() - 10 * 60 * 1000);
+    const stuckInvoices = await Invoice.find({
+      proceso: null,
+      createdAt: { $lt: diezMinutosAtras }
+    });
+
+    if (stuckInvoices.length === 0) return 0;
+
+    console.log(`🛠️ Reparando ${stuckInvoices.length} facturas estancadas...`);
+
+    for (const inv of stuckInvoices) {
+      try {
+        // Re-encolar usando el nombre que el worker reconoce ('generar-factura')
+        await facturaQueue.add('generar-factura', {
+          datosFactura: inv.datosFactura,
+          facturaId: inv._id,
+          empresaId: inv.empresaId
+        }, {
+          jobId: `factura-${inv._id}`
+        });
+
+        const OperationLog = require('../models/OperationLog');
+        await OperationLog.create({
+          invoiceId: inv._id,
+          tipoOperacion: 'reintento_watchdog',
+          descripcion: 'Factura re-encolada automáticamente por el Watchdog (estaba estancada en null)',
+          estado: 'success'
+        });
+      } catch (e) {
+        console.warn(`⚠️ No se pudo re-encolar factura ${inv._id}: Redis desconectado.`);
+      }
+    }
+
+    return stuckInvoices.length;
+  } catch (err) {
+    console.error('❌ Error en repairStuckInvoices:', err.message);
+    throw err;
+  }
+}
+
 // ========================================
 // EXPORTS
 // ========================================
@@ -262,5 +337,6 @@ module.exports = {
   cleanFailedJobs,
   cleanAllJobs,
   retryFailedJobs,
+  repairStuckInvoices,
   redisConfig
 };

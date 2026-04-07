@@ -32,7 +32,26 @@ mongoose.connect(MONGODB_URI, {
 .catch(err => console.error('❌ [WORKER] Error conectando a MongoDB:', err.message));
 
 // ========================================
-// PROCESADOR DE FACTURAS
+// ESTADO DE REDIS
+// ========================================
+let redisListo = false;
+
+facturaQueue.on('ready', () => {
+  if (!redisListo) {
+    redisListo = true;
+    console.log('✅ [WORKER] Redis conectado — Cola de facturación ACTIVA');
+  }
+});
+
+facturaQueue.on('error', (err) => {
+  if (err.message.includes('ECONNREFUSED')) {
+    redisListo = false;
+    // El aviso ya lo muestra retryStrategy, no spammear aquí
+  }
+});
+
+// ========================================
+// PROCESADOR DE FACTURAS  (se activa cuando Redis esté listo)
 // ========================================
 
 facturaQueue.process('generar-factura', async (job) => {

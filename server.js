@@ -242,6 +242,27 @@ app.get('/api/queue/jobs', async (req, res) => {
   }
 });
 
+// ========================================
+// ENDPOINT: REPARAR FACTURAS ESTANCADAS
+// ========================================
+app.post('/api/queue/repair-stuck', async (req, res) => {
+  try {
+    const { repairStuckInvoices } = require('./queues/facturaQueue');
+    const repairedCount = await repairStuckInvoices();
+
+    res.json({
+      success: true,
+      message: `Se re-encolaron ${repairedCount} facturas estancadas`,
+      data: { repairedCount }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // ENDPOINT: LIMPIAR JOBS COMPLETADOS
 // ========================================
 app.post('/api/queue/clear', async (req, res) => {
