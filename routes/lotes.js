@@ -23,10 +23,27 @@ router.get('/', verificarToken, async (req, res) => {
     if (!empresa) {
       return res.status(403).json({ success: false, error: 'Empresa no autorizada' });
     }
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const skip = (page - 1) * limit;
+
     const lotes = await Lote.find({ empresaId })
       .sort({ createdAt: -1 })
-      .limit(100);
-    res.json({ success: true, data: lotes });
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Lote.countDocuments({ empresaId });
+
+    res.json({ 
+      success: true, 
+      data: lotes,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
