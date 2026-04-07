@@ -31,7 +31,16 @@ const Invoice = require('./models/Invoice');
 const OperationLog = require('./models/OperationLog');
 
 // Importar utilitarios SIFEN
-const { determinarEstadoSegunCodigo, determinarEstadoVisual, extraerEstadoDocumento } = require('./utils/estadoSifen');
+const { 
+  determinarEstadoSegunCodigo, 
+  determinarEstadoVisual, 
+  extraerEstadoDocumento,
+  extraerCodigoRetorno,
+  extraerMensajeRetorno,
+  extraerFechaProceso,
+  extraerDigestValue,
+  extraerEstadoResultado
+} = require('./utils/estadoSifen');
 
 // Importar wrapper de SET API (soporta Mock y Producción)
 const setApi = require('./services/setapi-wrapper');
@@ -446,7 +455,7 @@ app.get('/api/invoices/estado/:cdc', async (req, res) => {
         console.log('⚠️ No se encontró la empresa, usando configuración por defecto');
       }
 
-      const idConsulta = crypto.randomBytes(16).toString('hex');
+      const idConsulta = Date.now();
       const ambiente = empresa?.configuracionSifen?.modo || 'test';
       
       // Obtener ruta y contraseña del certificado de la empresa
@@ -622,7 +631,7 @@ app.post('/api/invoices/:id/refresh-status', async (req, res) => {
         console.log('⚠️ No se encontró la empresa, usando configuración por defecto');
       }
 
-      const idConsulta = crypto.randomBytes(16).toString('hex');
+      const idConsulta = Date.now(); // Debe ser numérico para que SET no rechace por XSD (XML Mal Formado)
       const ambiente = empresa?.configuracionSifen?.modo || 'test';
 
       // Obtener ruta y contraseña del certificado de la empresa mediante el método oficial
@@ -642,122 +651,85 @@ app.post('/api/invoices/:id/refresh-status', async (req, res) => {
       const respuesta = await setApi.consulta(idConsulta, invoiceRecord.cdc, ambiente, certificateP12Path, certificatePassword);
 
       console.log('📥 Respuesta recibida de la SET');
-      console.log('Respuesta:', respuesta.substring(0, 500));
-
-      // Extraer campos de la respuesta SOAP según Manual Técnico v150
-      // Estructura: <rProtDe><dCodRes>...</dCodRes><dEstRes>...</dEstRes><dMsgRes>...</dMsgRes>...</rProtDe>
-      // También soportamos formatos con namespace ns2: y formatos genéricos
-      const codigoRetornoMatch =
-        respuesta.match(/<ns2:dCodRes>(.*?)<\/ns2:dCodRes>/) ||
-        respuesta.match(/<dCodRes>(.*?)<\/dCodRes>/) ||
-        respuesta.match(/<codigoRetorno>(.*?)<\/codigoRetorno>/);
-
-      const estadoRetornoMatch =
-        respuesta.match(/<ns2:estado>(.*?)<\/ns2:estado>/) ||  // Primero buscar <estado> para consultas
-        respuesta.match(/<estado>(.*?)<\/estado>/) ||
-        respuesta.match(/<ns2:dEstRes>(.*?)<\/ns2:dEstRes>/) ||
-        respuesta.match(/<dEstRes>(.*?)<\/dEstRes>/) ||
-        respuesta.match(/<estadoResultado>(.*?)<\/estadoResultado>/);
-
-      const mensajeRetornoMatch =
-        respuesta.match(/<ns2:dMsgRes>(.*?)<\/ns2:dMsgRes>/) ||
-        respuesta.match(/<dMsgRes>(.*?)<\/dMsgRes>/) ||
-        respuesta.match(/<mensajeRetorno>(.*?)<\/mensajeRetorno>/);
-
-      const fechaProcesoMatch =
-        respuesta.match(/<ns2:dFecProc>(.*?)<\/ns2:dFecProc>/) ||
-        respuesta.match(/<dFecProc>(.*?)<\/dFecProc>/) ||
-        respuesta.match(/<fechaProceso>(.*?)<\/fechaProceso>/);
-
-      const digestValueMatch =
-        respuesta.match(/<ns2:dDigVal>(.*?)<\/ns2:dDigVal>/) ||
-        respuesta.match(/<dDigVal>(.*?)<\/dDigVal>/) ||
-        respuesta.match(/<digestValue>(.*?)<\/digestValue>/);
-
-      console.log('🔍 Extrayendo datos de la respuesta...');
-      console.log('  codigoRetornoMatch:', codigoRetornoMatch);
-      console.log('  estadoRetornoMatch:', estadoRetornoMatch);
-      console.log('  mensajeRetornoMatch:', mensajeRetornoMatch);
-      console.log('  Respuesta SOAP (primeros 800 chars):', respuesta.substring(0, 800));
-
-      let codigoRetorno = invoiceRecord.codigoRetorno;
-      let estadoRetorno = invoiceRecord.respuestaSifen?.estado;
-      let mensajeRetorno = invoiceRecord.mensajeRetorno;
-      let fechaProceso = invoiceRecord.fechaProceso;
-      let digestValueResp = invoiceRecord.digestValue;
-
-      if (codigoRetornoMatch && codigoRetornoMatch[1]) {
-        codigoRetorno = codigoRetornoMatch[1].trim();
-        console.log('  Código de retorno extraído:', codigoRetorno);
+      if (typeof respuesta === 'string') {
+        console.log('Respuesta (String):', respuesta.substring(0, 500));
+      } else {
+        console.log('Respuesta (Objeto):', JSON.stringify(respuesta).substring(0, 500));
       }
 
-      if (estadoRetornoMatch && estadoRetornoMatch[1]) {
-        estadoRetorno = estadoRetornoMatch[1].trim();
-        console.log('  Estado de retorno extraído:', estadoRetorno);
+      // Extraer campos usando utilidades centralizadas (soportan String y Object)
+      const codigoRetorno = extraerCodigoRetorno(respuesta);
+      const estadoRetorno = extraerEstadoDocumento(respuesta) || extraerEstadoResultado(respuesta);
+      const mensajeRetorno = extraerMensajeRetorno(respuesta);
+      const fechaProceso = extraerFechaProceso(respuesta);
+      const digestValueResp = extraerDigestValue(respuesta);
+
+      console.log('🔍 Datos extraídos de la respuesta:');
+      console.log('  Código:', codigoRetorno);
+      console.log('  Estado:', estadoRetorno);
+      console.log('  Mensaje:', mensajeRetorno);
+      console.log('  Fecha Proc:', fechaProceso);
+      console.log('  DigestValue:', digestValueResp);
+
+      // ========================================
+      // CÓDIGOS DE ERROR DE COMUNICACIÓN/SOAP (No son estado del documento)
+      // Estos errores ocurren cuando la consulta en sí falla, el documento
+      // en la SET puede estar bien. NO se debe actualizar el estado.
+      // - 0160: XML Mal Formado (error en la request SOAP, no en el documento)
+      // - 0161: Firma del DE inválida o corrompida (error en el request)
+      // ========================================
+      const codigosErrorComunicacion = ['0160', '0161'];
+      if (codigosErrorComunicacion.includes(codigoRetorno)) {
+        console.log(`  ⚠️ Código ${codigoRetorno}: Error de comunicación con SET (no es estado del documento)`);
+        console.log(`  ℹ️ Se conserva el estado anterior: ${invoiceRecord.estadoSifen}`);
+
+        // Solo registrar el intento fallido en el log, sin modificar la BD
+        await new OperationLog({
+          invoiceId: id,
+          tipoOperacion: 'error_consulta_comunicacion',
+          descripcion: `Error de comunicación al consultar SET (Código ${codigoRetorno}): ${mensajeRetorno}. El estado del documento no fue modificado.`,
+          estado: 'warning',
+          fecha: new Date(),
+          detalle: { cdc: invoiceRecord.cdc, codigoRetorno, mensajeRetorno }
+        }).save();
+
+        return res.status(200).json({
+          success: false,
+          errorComunicacion: true,
+          message: `Error en la consulta a SET (Código ${codigoRetorno}): ${mensajeRetorno}. El estado del documento no fue modificado.`,
+          estadoActual: invoiceRecord.estadoSifen,
+          estadoVisual: invoiceRecord.estadoVisual,
+          codigoRetorno: codigoRetorno,
+          mensajeRetorno: mensajeRetorno,
+          esEstadoFinal: false,
+          consultoSET: true
+        });
       }
 
-      if (mensajeRetornoMatch && mensajeRetornoMatch[1]) {
-        mensajeRetorno = mensajeRetornoMatch[1].trim();
-        console.log('  Mensaje extraído:', mensajeRetorno);
-      }
-
-      if (fechaProcesoMatch && fechaProcesoMatch[1]) {
-        fechaProceso = fechaProcesoMatch[1].trim();
-        console.log('  Fecha de proceso extraída:', fechaProceso);
-      }
-
-      if (digestValueMatch && digestValueMatch[1]) {
-        digestValueResp = digestValueMatch[1].trim();
-        console.log('  DigestValue extraído:', digestValueResp);
-      }
-
-      // Determinar estado visual según código de retorno según Manual Técnico v150
-      //
-      // Para RECEPCIÓN (siRecepDE) - Sección 9.1.3:
-      // - 0260 = Autorización satisfactoria (Aprobado) 🟢
-      // - 1005 = Transmisión extemporánea (Observado) 🟠
-      // - 1000-1004 = Errores de validación (Rechazado) 🔴
-      //
-      // Para CONSULTA (siConsDE) - Sección 12.3.4.3:
-      // - 0420 = CDC inexistente (Error - no encontrado en SET) 🔴
-      // - 0421 = CDC encontrado (Éxito de consulta) - estado real depende del documento 🟢
-      // - 0422 = CDC encontrado (alternativo)
-      //
-      // NOTA: El campo <estado> NO es parte del schema oficial (Schema XML 10).
-      // Para obtener el estado real cuando dCodRes=0421, debemos consultar el documento
-      // en el mock-set vía REST API.
-      //
-      // NOTA: El código 0000 NO es oficial. Se usaba anteriormente para "En procesamiento".
       let estadoVisual = 'rechazado';
       let estadoSifen = 'rechazado';
 
       if (codigoRetorno === '0260') {
-        // Recepción: Autorización satisfactoria (DTE aprobado)
         estadoVisual = 'aceptado';
         estadoSifen = 'aceptado';
         console.log('  ✅ Código 0260: Autorización satisfactoria');
       } else if (codigoRetorno === '1005') {
-        // Recepción: Transmisión extemporánea - ÚNICO CASO donde estado = 'observado'
         estadoVisual = 'observado';
         estadoSifen = 'observado';
         console.log('  ⚠️ Código 1005: Transmisión extemporánea');
       } else if (['1000', '1001', '1002', '1003', '1004'].includes(codigoRetorno)) {
-        // Recepción: Errores de validación - Rechazado
         estadoVisual = 'rechazado';
         estadoSifen = 'rechazado';
         console.log('  ❌ Código', codigoRetorno, ': Error de validación - Rechazado');
       } else if (codigoRetorno === '0420') {
-        // Consulta: CDC inexistente - La factura no está en la SET
         estadoVisual = 'error';
         estadoSifen = 'error';
         console.log('  ❌ Código 0420: CDC inexistente - Factura no encontrada en SET');
       } else if (codigoRetorno === '0421') {
-        // Consulta: RUC Certificado sin permiso - Error de autenticación
         estadoVisual = 'rechazado';
         estadoSifen = 'rechazado';
         console.log('  ❌ Código 0421: RUC Certificado sin permiso para consultar');
       } else if (codigoRetorno === '0422') {
-        // Consulta: CDC encontrado - Documento APROBADO
         estadoVisual = 'aceptado';
         estadoSifen = 'aceptado';
         console.log('  ✅ Código 0422: CDC encontrado - Documento APROBADO');

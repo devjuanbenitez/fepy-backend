@@ -316,8 +316,12 @@ router.post('/:id/retry', async (req, res) => {
       // Nota: El certificado no es necesario porque el XML ya está firmado
       const soapResponse = await setApi.recibe(idDocumento, xmlOriginal, ambiente);
 
-      console.log('📄 Respuesta SOAP recibida en reenvío:');
-      console.log(soapResponse.substring(0, 500) + '...');
+      console.log('📄 Respuesta recibida en reenvío:');
+      if (typeof soapResponse === 'string') {
+        console.log(soapResponse.substring(0, 500) + '...');
+      } else {
+        console.log(JSON.stringify(soapResponse).substring(0, 500) + '...');
+      }
 
       // Extraer código de retorno de la respuesta
       const codigoRetorno = extraerCodigoRetorno(soapResponse);
@@ -613,8 +617,9 @@ router.get('/cdc/:cdc', async (req, res) => {
         throw new Error('No hay empresas activas configuradas para realizar la consulta remota');
       }
 
-      const idConsulta = crypto.randomBytes(16).toString('hex');
-      const ambiente = empresa.configuracionSifen?.modo || 'test';
+      // OBTENER ESTADO DESDE SIFEN
+      const idConsulta = Date.now(); // SET require ID numérico
+      const ambiente = empresa?.configuracionSifen?.modo || 'test';
       const rutaCertificado = empresa.obtenerRutaCertificado();
       
       const { descifrarContrasena } = require('../services/certificadoService');

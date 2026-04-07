@@ -191,6 +191,13 @@ function determinarEstadoSegunCodigo(codigo) {
     return 'observado';
   }
 
+  // Errores de comunicación o estructura (No son estado final real del DE)
+  // 0160: XML Mal Formado
+  // 0161: Firma del DE inválida o corrompida
+  if (['0160', '0161'].includes(codigo)) {
+    return 'procesando'; // Mantiene la factura pendiente de reintento/consulta
+  }
+
   // Cualquier otro código es considerado rechazado o error
   return 'rechazado';
 }
@@ -199,6 +206,12 @@ function determinarEstadoSegunCodigo(codigo) {
  * Determina el estado visual
  */
 function determinarEstadoVisual(codigo) {
+  // Para errores de estructura que dejamos en 'procesando',
+  // queremos que visualmente se note que hubo un error (rechazado/error)
+  if (['0160', '0161'].includes(codigo)) {
+    return 'rechazado';
+  }
+  
   const estadoSifen = determinarEstadoSegunCodigo(codigo);
   return estadoSifen; // Coinciden en este sistema
 }
@@ -242,6 +255,9 @@ function getMensajePorCodigo(codigo) {
 /**
  * Extrae el estado del documento de una respuesta de consulta
  */
+/**
+ * Extrae el estado del documento de una respuesta de consulta
+ */
 function extraerEstadoDocumento(content) {
   if (!content) return null;
 
@@ -262,7 +278,41 @@ function extraerEstadoDocumento(content) {
   }
 }
 
+/**
+ * Extrae el protocolo de consulta de un lote (dProtConsLote)
+ */
+function extraerProtocoloLote(content) {
+  if (!content) return null;
+  if (typeof content === 'object') {
+    return buscarEnObjeto(content, 'dProtConsLote') || buscarEnObjeto(content, 'numeroLote');
+  }
+  return null; // Por ahora no implementamos regex para esto en XML ya que suele venir en el objeto de respuesta
+}
+
+/**
+ * Extrae el código de resultado del procesamiento del lote (dCodResLot)
+ */
+function extraerCodigoLote(content) {
+  if (!content) return null;
+  if (typeof content === 'object') {
+    return buscarEnObjeto(content, 'dCodResLot');
+  }
+  return null;
+}
+
+/**
+ * Extrae la lista de resultados de documentos en el lote (gResProcLote)
+ */
+function extraerResultadosLote(content) {
+  if (!content) return null;
+  if (typeof content === 'object') {
+    return buscarEnObjeto(content, 'gResProcLote');
+  }
+  return null;
+}
+
 module.exports = {
+  buscarEnObjeto,
   extraerCodigoRetorno,
   extraerMensajeRetorno,
   extraerEstadoResultado,
@@ -270,6 +320,9 @@ module.exports = {
   extraerCDC,
   extraerFechaProceso,
   extraerDigestValue,
+  extraerProtocoloLote,
+  extraerCodigoLote,
+  extraerResultadosLote,
   determinarEstadoSegunCodigo,
   determinarEstadoVisual,
   getColorPorEstadoVisual,

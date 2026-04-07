@@ -15,6 +15,15 @@ const setApi = require('../services/setapi-wrapper');
 const fs = require('fs');
 const path = require('path');
 const certificadoService = require('../services/certificadoService');
+const { 
+  extraerProtocoloLote, 
+  extraerCodigoLote, 
+  extraerResultadosLote,
+  extraerCDC,
+  extraerEstadoResultado,
+  extraerCodigoRetorno,
+  extraerMensajeRetorno
+} = require('../utils/estadoSifen');
 
 async function procesarEmpaquetadoLotes() {
   try {
@@ -105,20 +114,7 @@ async function procesarEmpaquetadoLotes() {
 
           const response = await setApi.recibeLote(idTransaccion, xmlArray, ambiente, rutaCertificado, contrasena, config);
           
-          // Búsqueda recursiva del número de lote por si los regex fallan con el parsing
-          const findLoteRecursivo = (obj) => {
-             if (!obj || typeof obj !== 'object') return null;
-             for (let key of Object.keys(obj)) {
-                 if (key.includes('dProtConsLote')) return obj[key];
-                 if (typeof obj[key] === 'object') {
-                    const res = findLoteRecursivo(obj[key]);
-                    if (res) return res;
-                 }
-             }
-             return null;
-          };
-          
-          let numeroLote = response?.numeroLote || findLoteRecursivo(response);
+          let numeroLote = extraerProtocoloLote(response);
           if (numeroLote === '0' || numeroLote === 0) numeroLote = null; // No encolado real
 
           
@@ -180,20 +176,7 @@ async function monitorearLotesPendientes() {
          const idRequest = Date.now();
          const resSET = await setApi.consultaLote(idRequest, lote.numeroLote, ambiente, rutaCertificado, contrasena);
          
-         // Función útil para encontrar propiedades sin importar el prefijo de namespace
-         const extractNode = (obj, keyword) => {
-            if (!obj || typeof obj !== 'object') return null;
-            for (let key of Object.keys(obj)) {
-                if (key.includes(keyword)) return obj[key];
-                if (typeof obj[key] === 'object') {
-                   const res = extractNode(obj[key], keyword);
-                   if (res) return res;
-                }
-            }
-            return null;
-         };
-
-         const codResLot = extractNode(resSET, 'dCodResLot');
+         const codResLot = extraerCodigoLote(resSET);
          
          if (codResLot === '0364') {
             // Sigue en proceso, ignorar
@@ -206,7 +189,7 @@ async function monitorearLotesPendientes() {
 
          if (codResLot === '0362') { // Concluido
              // Evaluar estado individual de cada sub-factura
-             const gResProcLote = extractNode(resSET, 'gResProcLote');
+             const gResProcLote = extraerResultadosLote(resSET);
              let listaResultados = Array.isArray(gResProcLote) ? gResProcLote : [gResProcLote];
              
              let hayErrores = false;
@@ -214,12 +197,12 @@ async function monitorearLotesPendientes() {
              
              for (const r of listaResultados) {
                  if (!r) continue;
-                 const cdc = extractNode(r, 'id');
-                 const estResStr = extractNode(r, 'dEstRes');
+                 const cdc = extraerCDC(r);
+                 const estResStr = extraerEstadoResultado(r);
                  const estRes = (estResStr || '').toLowerCase(); // Rechazado / Aprobado
                  
-                 const dCodRes = extractNode(r, 'dCodRes');
-                 const dMsgRes = extractNode(r, 'dMsgRes');
+                 const dCodRes = extraerCodigoRetorno(r);
+                 const dMsgRes = extraerMensajeRetorno(r);
                  
                  // Buscar por CDC en nuestras Invoices
                  if (cdc) {

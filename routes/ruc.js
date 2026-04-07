@@ -26,7 +26,7 @@ router.get('/:ruc', async (req, res) => {
       throw new Error('No hay empresas activas configuradas para realizar la consulta remota');
     }
 
-    const idConsulta = crypto.randomBytes(16).toString('hex');
+    const idConsulta = Date.now(); // SET require ID numérico
     const ambiente = empresa.configuracionSifen?.modo || 'test';
     const rutaCertificado = empresa.obtenerRutaCertificado();
     const certificatePassword = descifrarContrasena(empresa.certificado.contrasena);
