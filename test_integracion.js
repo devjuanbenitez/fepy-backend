@@ -201,6 +201,47 @@ console.log(`  - fechaProceso: ${fechaProceso5} ${fechaProceso5 === '2026-03-03 
 console.log(`  - digestValue: ${digestValue5} ${digestValue5 === 'abc123' ? '✅' : '❌'}`);
 
 // ============================================================================
+// TEST 6: Extraer resultados de lote (gResProcLote) - Array/Object
+// ============================================================================
+console.log('\n6️⃣  TEST: Extraer resultados de lote (Array/Object)');
+console.log('-'.repeat(80));
+
+const { extraerResultadosLote } = require('./utils/estadoSifen');
+
+const respuestaLote = {
+  "ns2:rResEnviConsLoteDe": {
+    "ns2:gResProcLote": [
+      { "ns2:id": "CDC_1", "ns2:dEstRes": "Rechazado" },
+      { "ns2:id": "CDC_2", "ns2:dEstRes": "Aprobado" }
+    ]
+  }
+};
+
+const resultadosLote = extraerResultadosLote(respuestaLote);
+console.log('Resultados de extracción de Lote:');
+console.log(`  - Es Array: ${Array.isArray(resultadosLote) ? '✅' : '❌'}`);
+console.log(`  - Cantidad: ${resultadosLote?.length} ${resultadosLote?.length === 2 ? '✅' : '❌'}`);
+console.log(`  - Primer ID: ${resultadosLote?.[0]?.['ns2:id']} ${resultadosLote?.[0]?.['ns2:id'] === 'CDC_1' ? '✅' : '❌'}`);
+
+// ============================================================================
+// TEST 7: Detectar evento de cancelación en contenido
+// ============================================================================
+console.log('\n7️⃣  TEST: Detectar evento de cancelación');
+console.log('-'.repeat(80));
+
+const { contieneEventoCancelacion } = require('./utils/estadoSifen');
+
+const contenidoConCancelacion = '<xContEv><rContEv><xEvento><rGesEve><rEve><gGroupTiEvt><rGeVeCan><Id>CDC_CANCEL</Id></rGeVeCan></gGroupTiEvt></rEve></rGesEve></xEvento></rContEv></xContEv>';
+const contenidoSinCancelacion = '<xContEv><rContEv>...</rContEv></xContEv>';
+
+const tieneCan1 = contieneEventoCancelacion(contenidoConCancelacion);
+const tieneCan2 = contieneEventoCancelacion(contenidoSinCancelacion);
+
+console.log('Resultados de detección de cancelación:');
+console.log(`  - Detectado (con evento): ${tieneCan1 ? '✅' : '❌'}`);
+console.log(`  - No detectado (sin evento): ${!tieneCan2 ? '✅' : '❌'}`);
+
+// ============================================================================
 // RESUMEN
 // ============================================================================
 console.log('\n' + '='.repeat(80));
@@ -209,6 +250,7 @@ console.log('='.repeat(80));
 console.log('');
 console.log('✅ El backend puede parsear correctamente las respuestas SOAP de SIFEN');
 console.log('✅ Se soportan ambos formatos: SIFEN v150 (con namespace ns2:) y legacy');
+console.log('✅ Extracción de Lotes (Arrays) y Eventos de Cancelación verificados');
 console.log('');
 console.log('Funciones actualizadas en utils/estadoSifen.js:');
 console.log('  ✅ extraerCodigoRetorno() - Soporta <ns2:dCodRes>, <dCodRes>, <codigoRetorno>');
@@ -218,6 +260,8 @@ console.log('  ✅ extraerEstadoDocumento() - Soporta <ns2:estado>, <estado>, <e
 console.log('  ✅ extraerCDC() - Soporta <ns2:id>, <id>, <cdc>');
 console.log('  ✅ extraerFechaProceso() - Soporta <ns2:dFecProc>, <dFecProc>, <fechaProceso>');
 console.log('  ✅ extraerDigestValue() - Soporta <ns2:dDigVal>, <dDigVal>, <digestValue>');
+console.log('  ✅ extraerResultadosLote() - Soporta Arrays sin eliminarlos ✅');
+console.log('  ✅ contieneEventoCancelacion() - Detecta rGeVeCan en XML ✅');
 console.log('');
 console.log('Archivos actualizados en server.js:');
 console.log('  ✅ Líneas ~702 - Extracción en consulta de estado');
