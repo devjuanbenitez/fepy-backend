@@ -175,6 +175,18 @@ function extraerDigestValue(content) {
 }
 
 /**
+ * Verifica si dentro del contenido (como xContenDE) existe un evento de cancelación aprobado
+ */
+function contieneEventoCancelacion(content) {
+  if (!content) return false;
+  
+  const contentStr = typeof content === 'object' ? JSON.stringify(content) : content;
+  
+  // rGeVeCan es el elemento XML que marca un evento de cancelación
+  return contentStr.includes('<rGeVeCan>') || contentStr.includes('&lt;rGeVeCan&gt;');
+}
+
+/**
  * Determina el estado SIFEN según el código de retorno
  */
 function determinarEstadoSegunCodigo(codigo) {
@@ -326,5 +338,6 @@ module.exports = {
   determinarEstadoSegunCodigo,
   determinarEstadoVisual,
   getColorPorEstadoVisual,
-  getMensajePorCodigo
+  getMensajePorCodigo,
+  contieneEventoCancelacion
 };

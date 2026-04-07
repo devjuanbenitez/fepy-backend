@@ -730,9 +730,16 @@ app.post('/api/invoices/:id/refresh-status', async (req, res) => {
         estadoSifen = 'rechazado';
         console.log('  ❌ Código 0421: RUC Certificado sin permiso para consultar');
       } else if (codigoRetorno === '0422') {
-        estadoVisual = 'aceptado';
-        estadoSifen = 'aceptado';
-        console.log('  ✅ Código 0422: CDC encontrado - Documento APROBADO');
+        const { contieneEventoCancelacion } = require('./utils/estadoSifen');
+        if (contieneEventoCancelacion(respuesta)) {
+          estadoVisual = 'cancelado';
+          estadoSifen = 'cancelado';
+          console.log('  ✅ Código 0422: CDC encontrado, PERO contiene evento de CANCELACIÓN. Documento CANCELADO');
+        } else {
+          estadoVisual = 'aceptado';
+          estadoSifen = 'aceptado';
+          console.log('  ✅ Código 0422: CDC encontrado - Documento APROBADO');
+        }
       }
 
       console.log('  Estado visual:', estadoVisual, '(desde código:', codigoRetorno + ')');
