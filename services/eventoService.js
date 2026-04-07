@@ -207,8 +207,8 @@ async function enviarEvento(params) {
     // ========================================
     // 4. Enviar a SET
     // ========================================
-    const idDocumento = crypto.randomBytes(16).toString('hex');
-    const ambiente = empresa.configuracionSifen.modo || 'test';
+    const idDocumento = Date.now(); // SET requiere ID numérico
+    const ambiente = empresa.configuracionSifen?.modo || 'test';
 
     console.log('📤 Enviando evento a SET...');
     
