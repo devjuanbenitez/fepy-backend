@@ -255,9 +255,32 @@ async function procesarFactura(datosFactura, empresaId, job = null, invoiceId = 
     await reportarProgreso(70);
 
     // ========================================
-    // 9. Enviar a SET - AHORA EL XML YA ESTÁ GUARDADO
+    // 8.5 VERIFICAR MODO DE ENVÍO
     // ========================================
-    console.log('📤 Enviando a SET...');
+    if (empresa.configuracionSifen?.estrategiaEnvio === 'lote' || empresa.estrategiaEnvio === 'lote') {
+      console.log('📦 Factura suspendida para envío por Lotes. XML preparado.');
+      await reportarProgreso(100);
+      return {
+        success: true,
+        cdc: cdcFirma,
+        xmlPath: xmlPathRelativo,
+        xmlContent: xmlConQR,
+        rutaArchivo: rutaArchivo,
+        estado: 'esperando_lote',
+        estadoVisual: 'observado',
+        codigoRetorno: '0000',
+        mensajeRetorno: 'Esperando reagrupación en Lote',
+        digestValue: digestValueFirma,
+        fechaProceso: null,
+        correlativo: correlativo,
+        respuestaSET: null
+      };
+    }
+
+    // ========================================
+    // 9. Enviar a SET individualmente (Síncrono)
+    // ========================================
+    console.log('📤 Enviando a SET de forma individual...');
     const idDocumento = Date.now();
 
     let soapResponse = null;

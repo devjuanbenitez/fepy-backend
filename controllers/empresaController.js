@@ -214,16 +214,9 @@ exports.actualizar = async (req, res) => {
     if (nombreFantasia) empresa.nombreFantasia = nombreFantasia;
     if (razonSocial) empresa.razonSocial = razonSocial;
     if (configuracionSifen) {
-      // Validar CSC si se proporciona (debe ser 32 caracteres hexadecimales)
+      // Limpiar CSC si se proporciona (solo trim, sin validación de formato hexadecimal)
       if (configuracionSifen.csc) {
-        const cscLimpio = configuracionSifen.csc.trim();
-        if (!/^[0-9A-F]{32}$/i.test(cscLimpio)) {
-          return res.status(400).json({
-            success: false,
-            error: 'CSC inválido. Debe ser 32 caracteres hexadecimales'
-          });
-        }
-        configuracionSifen.csc = cscLimpio.toUpperCase();
+        configuracionSifen.csc = configuracionSifen.csc.trim();
       }
       // Validar timbrado si se proporciona (debe ser 8 dígitos)
       if (configuracionSifen.timbrado) {

@@ -101,6 +101,10 @@ module.exports = {
     return init().consulta;
   },
   
+  get consultaLote() {
+    return init().consultaLote;
+  },
+  
   get consultaRUC() {
     return init().consultaRUC;
   },

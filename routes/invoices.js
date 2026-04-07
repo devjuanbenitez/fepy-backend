@@ -475,37 +475,71 @@ router.get('/:id/download-pdf', async (req, res) => {
       return res.status(404).json({ message: 'Factura no encontrada' });
     }
 
-    if (!invoice.kudePath) {
-      return res.status(404).json({
-        message: 'PDF no disponible',
-        detalle: 'Esta factura no tiene un archivo PDF KUDE asociado. Puede que el PDF no haya sido generado correctamente.'
-      });
+    let pdfPath = null;
+
+    // Verificar si ya existe kudePath y el archivo físico
+    if (invoice.kudePath) {
+      pdfPath = path.isAbsolute(invoice.kudePath) 
+        ? invoice.kudePath 
+        : path.join(__dirname, '../de_output', invoice.kudePath);
+        
+      if (!fs.existsSync(pdfPath)) {
+        pdfPath = null; // Marcar como no disponible para forzar regeneración
+      }
     }
 
-    // Construir la ruta absoluta al archivo PDF
-    // kudePath ya es una ruta absoluta desde server.js
-    let pdfPath = invoice.kudePath;
-    
-    // Si kudePath es relativa, convertir a absoluta
-    if (!path.isAbsolute(pdfPath)) {
-      pdfPath = path.join(__dirname, '../de_output', pdfPath);
-    }
-    
-    console.log(`📂 Buscando documento PDF en: ${pdfPath}`);
+    // ==========================================
+    // FALLBACK: Generación automática de PDF
+    // ==========================================
+    if (!pdfPath) {
+      console.log(`⚠️ PDF no encontrado para factura ${invoice.correlativo}. Intentando regeneración automática (fallback)...`);
+      
+      if (!invoice.xmlPath) {
+        return res.status(404).json({
+          message: 'No es posible regenerar el PDF',
+          detalle: 'La factura no tiene un archivo XML guardado para realizar la regeneración del PDF.'
+        });
+      }
 
-    // Verificar que el archivo existe
-    if (!fs.existsSync(pdfPath)) {
-      console.error(`❌ Archivo PDF no encontrado: ${pdfPath}`);
-      return res.status(404).json({
-        message: 'Archivo PDF no encontrado en el servidor',
-        ruta: pdfPath,
-        correlativo: invoice.correlativo,
-        detalle: 'El archivo PDF no existe en el servidor. Puede que se haya eliminado manualmente o que haya un error en la ruta.'
-      });
+      const xmlPath = path.join(__dirname, '../de_output', invoice.xmlPath);
+      if (!fs.existsSync(xmlPath)) {
+        return res.status(404).json({
+          message: 'No es posible regenerar el PDF',
+          detalle: 'El archivo XML base no existe físicamente en el servidor.'
+        });
+      }
+
+      const empresa = await Empresa.findById(invoice.empresaId);
+      if (!empresa) {
+        return res.status(404).json({ message: 'No es posible regenerar el PDF. Empresa no encontrada.' });
+      }
+
+      // Llamar a generarKUDE
+      const generatedPath = await generarKUDE(
+        xmlPath,
+        invoice.cdc,
+        invoice.correlativo,
+        new Date(invoice.fechaCreacion),
+        invoice.datosFactura,
+        empresa
+      );
+
+      if (!generatedPath) {
+        return res.status(500).json({ message: 'Error interno al intentar regenerar el PDF' });
+      }
+
+      // Actualizar registro en DB
+      const basePath = path.join(__dirname, '../de_output');
+      const relativePdfPath = path.relative(basePath, generatedPath).replace(/\\/g, '/');
+      invoice.kudePath = relativePdfPath;
+      await invoice.save();
+      
+      console.log(`✅ [FALLBACK] PDF regenerado y asignado: ${relativePdfPath}`);
+      pdfPath = generatedPath;
     }
 
     // Configurar headers para descarga
-    const fileName = pdfPath.split('/').pop(); // Obtener el nombre del archivo desde la ruta
+    const fileName = pdfPath.split('/').pop().split('\\').pop(); // Nombre del archivo seguro cross-platform
     res.setHeader('Content-Type', 'application/pdf');
     // RFC 5987: codificar caracteres especiales en filename
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
@@ -519,7 +553,7 @@ router.get('/:id/download-pdf', async (req, res) => {
       res.status(500).json({ message: 'Error al leer el archivo PDF' });
     });
   } catch (error) {
-    console.error('Error descargando PDF:', error);
+    console.error('Error descargando PDF (fallback):', error);
     res.status(500).json({ message: 'Error al descargar PDF' });
   }
 });

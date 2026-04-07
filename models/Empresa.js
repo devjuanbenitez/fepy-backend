@@ -64,6 +64,21 @@ const empresaSchema = new mongoose.Schema({
     urlLogo: {
       type: String,
       default: 'https://lrtv.jaranetwork.com/sites/default/files/styles/poster/public/logos/hit.png?itok=UHWpjKPdd'
+    },
+    estrategiaEnvio: {
+      type: String,
+      enum: ['sincrono', 'lote'],
+      default: 'sincrono'
+    },
+    lotesCantidadMaxima: {
+      type: Number,
+      default: 50,
+      min: 1,
+      max: 50 // SET limite is 50
+    },
+    lotesTiempoLimiteSegundos: {
+      type: Number,
+      default: 3600 // 1 hour
     }
   },
   

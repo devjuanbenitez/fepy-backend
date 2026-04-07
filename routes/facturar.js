@@ -169,7 +169,7 @@ router.post('/crear', async (req, res) => {
             correlativo: facturaExistente.correlativo,
             estadoSifen: facturaExistente.estadoSifen,
             cdc: facturaExistente.cdc || '',
-            proceso: facturaExistente.proceso || 'Pendiente'
+            proceso: facturaExistente.proceso || null
           }
         });
       }
@@ -181,7 +181,7 @@ router.post('/crear', async (req, res) => {
       facturaExistente.datosFactura = datosFactura;
       facturaExistente.datosFactura = datosFactura;
       facturaExistente.estadoSifen = 'encolado';
-      facturaExistente.proceso = 'Pendiente';  // Resetear para nuevo intento
+      facturaExistente.proceso = null;  // Resetear a null = pendiente de procesar
       facturaExistente.fechaCreacion = new Date();
       // Limpiar campos de proceso anterior
       facturaExistente.cdc = '';
@@ -228,7 +228,7 @@ router.post('/crear', async (req, res) => {
           facturaId: invoice._id,
           correlativo: correlativoCompleto,
           estado: 'encolado',
-          proceso: 'Pendiente',  // Resetear a Pendiente para nuevo intento
+          proceso: null,  // null = pendiente de procesar
           jobId: job.id,
           reintentando: true,
           intentoAnterior: {
@@ -272,7 +272,7 @@ router.post('/crear', async (req, res) => {
       total: totalFactura,
       fechaCreacion: new Date(),
       estadoSifen: 'encolado',
-      proceso: 'Pendiente',  // Nuevo campo: Pendiente de procesar
+      proceso: null,  // null = pendiente de procesar (enum: Terminado | Fallido | null)
       datosFactura: datosFactura,
       facturaHash: facturaHash
     });
@@ -308,7 +308,7 @@ router.post('/crear', async (req, res) => {
         facturaId: invoice._id,
         correlativo: correlativoCompleto,
         estado: 'encolado',
-        proceso: 'Pendiente',  // Nuevo campo: Pendiente = pendiente, 'Terminado' = completado, 'Fallido' = error
+        proceso: null,  // null = pendiente | 'Terminado' = ok | 'Fallido' = error
         jobId: job.id,
         // Campos que se completarán después del procesamiento
         cdc: '',  // Se genera cuando se procesa el XML

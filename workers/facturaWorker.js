@@ -145,6 +145,10 @@ facturaQueue.process('generar-factura', async (job) => {
       tipoOperacion = 'respuesta_sifen';
       descripcion = `Factura en procesamiento - CDC: ${resultado.cdc}`;
       estadoLog = 'success';
+    } else if (resultado.estado === 'esperando_lote') {
+      tipoOperacion = 'respuesta_sifen';
+      descripcion = `Factura firmada y lista para consolidación en próximo Lote.`;
+      estadoLog = 'success';
     }
 
     await OperationLog.create({
@@ -167,6 +171,8 @@ facturaQueue.process('generar-factura', async (job) => {
       console.log(`❌ [WORKER] Factura ${facturaId} con error - CDC: ${resultado.cdc}, Código: ${resultado.codigoRetorno}`);
     } else if (resultado.estado === 'observado') {
       console.log(`⚠️ [WORKER] Factura ${facturaId} observada - CDC: ${resultado.cdc}, Código: ${resultado.codigoRetorno}`);
+    } else if (resultado.estado === 'esperando_lote') {
+      console.log(`📦 [WORKER] Factura ${facturaId} asignada para batch (Lote) - CDC: ${resultado.cdc}`);
     } else {
       console.log(`📋 [WORKER] Factura ${facturaId} ${resultado.estado} - CDC: ${resultado.cdc}`);
     }
@@ -174,26 +180,10 @@ facturaQueue.process('generar-factura', async (job) => {
     await job.progress(100);
     
     // ========================================
-    // ENCOLAR GENERACIÓN DE KUDE
+    // ENCOLAR GENERACIÓN DE KUDE (DESHABILITADO AUTÓMATA)
     // ========================================
-    try {
-      const jobData = {
-        facturaId: invoice._id.toString(),
-        xmlPath: resultado.rutaArchivo,
-        cdc: resultado.cdc,
-        correlativo: resultado.correlativo,
-        fechaCreacion: invoice.fechaCreacion,
-        datosFactura: invoice.datosFactura,  // Pasar datos para construir nombre del PDF
-        empresaId: invoice.empresaId?.toString()  // Pasar empresa para el logo
-      };
-      
-      await kudeQueue.add('generar-kude', jobData, {
-        priority: 1
-      });
-      console.log('📋 [WORKER] KUDE encolado para generación');
-    } catch (kudeError) {
-      console.warn('⚠️ [WORKER] No se pudo encolar KUDE:', kudeError.message);
-    }
+    // A petición del requerimiento, la generación de KUDE no se disparará automáticamente.
+    // Solo se realizará de forma manual o diferida bajo otra lógica.
     
     // ========================================
     // RETORNAR RESULTADO

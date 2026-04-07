@@ -16,6 +16,12 @@ const invoiceSchema = new mongoose.Schema({
     required: false,  // false temporalmente para migración
     index: true
   },
+  loteId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Lote',
+    required: false,
+    index: true
+  },
   
   // ========================================
   // CAMPOS EXISTENTES
@@ -40,7 +46,7 @@ const invoiceSchema = new mongoose.Schema({
   },
   estadoSifen: {
     type: String,
-    enum: ['recibido', 'procesando', 'enviado', 'aceptado', 'rechazado', 'error', 'encolado', 'observado', 'cancelado'],
+    enum: ['recibido', 'esperando_lote', 'procesando', 'enviado', 'aceptado', 'rechazado', 'error', 'encolado', 'observado', 'cancelado'],
     default: 'recibido'
   },
   fechaEnvio: {

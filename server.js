@@ -64,6 +64,9 @@ app.use('/api/empresas', empresaRoutes);
 app.use('/api/facturar', facturarRoutes);
 app.use('/api/eventos', eventosRoutes);
 
+const lotesRoutes = require('./routes/lotes');
+app.use('/api/lotes', lotesRoutes);
+
 // Rutas de autenticación (públicas)
 app.post('/api/auth/login', authController.login);
 // Rutas de autenticación (protegidas)
@@ -88,6 +91,11 @@ const connectDB = async () => {
       useUnifiedTopology: true,
     });
     console.log('✅ Conectado a MongoDB');
+    
+    // Iniciar Monitores Cron Internos de Lotes SIFEN
+    const { arrancarMonitores } = require('./workers/lotesManager');
+    arrancarMonitores();
+    
   } catch (error) {
     console.error('❌ Error conectando a MongoDB:', error.message);
     process.exit(1);
@@ -589,18 +597,16 @@ app.post('/api/invoices/:id/refresh-status', async (req, res) => {
       return res.json({
         success: true,
         message: 'Estado final - No se consultó a SET (no hay cambios posibles)',
-        data: {
-          facturaId: invoiceRecord._id,
-          correlativo: invoiceRecord.correlativo,
-          cdc: invoiceRecord.cdc,
-          estadoSifen: invoiceRecord.estadoSifen,
-          estadoVisual: invoiceRecord.estadoVisual,
-          codigoRetorno: invoiceRecord.codigoRetorno,
-          mensajeRetorno: invoiceRecord.mensajeRetorno,
-          fechaProceso: invoiceRecord.fechaProceso,
-          esEstadoFinal: true,
-          consultoSET: false
-        }
+        estadoAnterior: invoiceRecord.estadoSifen,
+        estadoActual: invoiceRecord.estadoSifen,
+        estadoVisual: invoiceRecord.estadoVisual,
+        proceso: invoiceRecord.proceso,
+        estadoCambio: false,
+        codigoRetorno: invoiceRecord.codigoRetorno,
+        mensajeRetorno: invoiceRecord.mensajeRetorno,
+        respuestaSifen: invoiceRecord.respuestaSifen,
+        esEstadoFinal: true,
+        consultoSET: false
       });
     }
 
@@ -619,17 +625,16 @@ app.post('/api/invoices/:id/refresh-status', async (req, res) => {
       const idConsulta = crypto.randomBytes(16).toString('hex');
       const ambiente = empresa?.configuracionSifen?.modo || 'test';
 
-      // Obtener ruta y contraseña del certificado de la empresa
-      let certificateP12Path = path.join(__dirname, '../certificados', 'p12', 'certificado.p12');
+      // Obtener ruta y contraseña del certificado de la empresa mediante el método oficial
+      let certificateP12Path = empresa.obtenerRutaCertificado();
       let certificatePassword = '123456';
 
-      if (empresa?.certificado?.nombreArchivo) {
+      if (empresa?.certificado?.contrasena) {
         const certificadoService = require('./services/certificadoService');
-        certificateP12Path = path.join(__dirname, '../certificados', 'p12', empresa.certificado.nombreArchivo);
         certificatePassword = certificadoService.descifrarContrasena(empresa.certificado.contrasena);
-        console.log(`🔑 Usando certificado de la empresa: ${empresa.certificado.nombreArchivo}`);
+        console.log(`🔑 Usando certificado de la empresa: ${certificateP12Path}`);
       } else {
-        console.log('⚠️ Empresa no tiene certificado configurado, usando certificado por defecto');
+        console.log('⚠️ Empresa no tiene certificado configurado, esto causará un error en SET');
       }
 
       console.log('📤 Enviando consulta a la SET...');
