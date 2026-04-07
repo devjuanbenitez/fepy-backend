@@ -316,11 +316,23 @@ function extraerCodigoLote(content) {
  * Extrae la lista de resultados de documentos en el lote (gResProcLote)
  */
 function extraerResultadosLote(content) {
-  if (!content) return null;
-  if (typeof content === 'object') {
-    return buscarEnObjeto(content, 'gResProcLote');
+  if (!content || typeof content !== 'object') return null;
+  
+  // Buscar recursivamente para no perder el Array que buscarEnObjeto destruiría.
+  function buscarArray(obj, campo) {
+    if (!obj || typeof obj !== 'object') return null;
+    const valor = obj[campo] || obj[`ns2:${campo}`] || obj[`ns: ${campo}`];
+    if (valor !== undefined) return valor; // Retornar tal cual (Array preservado)
+    for (const key in obj) {
+      if (typeof obj[key] === 'object') {
+        const res = buscarArray(obj[key], campo);
+        if (res !== null) return res;
+      }
+    }
+    return null;
   }
-  return null;
+  
+  return buscarArray(content, 'gResProcLote');
 }
 
 module.exports = {
