@@ -1,0 +1,383 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Definitions_SIFEN_Async" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:collaboration id="Collaboration_Sifen">
+    <bpmn:participant id="Participant_API" name="API Recepción (routes/facturar.js)" processRef="Process_API" />
+    <bpmn:participant id="Participant_WorkerXML" name="Procesamiento XML (facturaWorker.js)" processRef="Process_WorkerXML" />
+    <bpmn:participant id="Participant_LotesManager" name="Gestor de Lotes (lotesManager.js)" processRef="Process_LotesManager" />
+    <bpmn:participant id="Participant_SIFEN" name="SIFEN SET (Ministerio)" processRef="Process_SIFEN" />
+    <bpmn:participant id="Participant_Cliente" name="Sistema ERP Creador / Cliente" processRef="Process_Cliente" />
+    
+    <bpmn:messageFlow id="Flow_PostInvoice" sourceRef="Participant_Cliente" targetRef="StartEvent_ApiReceives" name="POST /api/facturar/crear" />
+    <bpmn:messageFlow id="Flow_Return202" sourceRef="Task_ReturnAccepted" targetRef="Participant_Cliente" name="HTTP 202 Accepted" />
+    <bpmn:messageFlow id="Flow_QueueJob" sourceRef="Task_EnqueueJob" targetRef="StartEvent_WorkerJob" name="Redis (facturaQueue)" />
+    <bpmn:messageFlow id="Flow_SendLote" sourceRef="Task_SendLote" targetRef="Participant_SIFEN" name="SOAP: recibeLote" />
+    <bpmn:messageFlow id="Flow_ReturnLote" sourceRef="Participant_SIFEN" targetRef="Task_SendLote" name="numeroLote (0300)" />
+    <bpmn:messageFlow id="Flow_ConsultaLote" sourceRef="Task_QueryLote" targetRef="Participant_SIFEN" name="SOAP: consultaLote" />
+    <bpmn:messageFlow id="Flow_ReturnConsulta" sourceRef="Participant_SIFEN" targetRef="Task_QueryLote" name="Estado Lote (0364 o 0362)" />
+  </bpmn:collaboration>
+
+  <bpmn:process id="Process_API" isExecutable="false">
+    <bpmn:startEvent id="StartEvent_ApiReceives" name="Recibir JSON de Factura">
+      <bpmn:outgoing>Flow_1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Task_Validations" name="Validar Empresa, JWT/Auth, Duplicados">
+      <bpmn:incoming>Flow_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_SaveEncolado" name="Guardar en BD (estado: encolado)">
+      <bpmn:incoming>Flow_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_3</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_EnqueueJob" name="Encolar en BullMQ (facturaQueue)">
+      <bpmn:incoming>Flow_3</bpmn:incoming>
+      <bpmn:outgoing>Flow_4</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_ReturnAccepted" name="Retornar 202 Inmediatamente con jobId">
+      <bpmn:incoming>Flow_4</bpmn:incoming>
+      <bpmn:outgoing>Flow_5</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="EndEvent_Api" name="Fin Recepción">
+      <bpmn:incoming>Flow_5</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_ApiReceives" targetRef="Task_Validations" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_Validations" targetRef="Task_SaveEncolado" />
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Task_SaveEncolado" targetRef="Task_EnqueueJob" />
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="Task_EnqueueJob" targetRef="Task_ReturnAccepted" />
+    <bpmn:sequenceFlow id="Flow_5" sourceRef="Task_ReturnAccepted" targetRef="EndEvent_Api" />
+  </bpmn:process>
+
+  <bpmn:process id="Process_WorkerXML" isExecutable="false">
+    <bpmn:startEvent id="StartEvent_WorkerJob" name="Leer de facturaQueue">
+      <bpmn:outgoing>Flow_W1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Task_SetProcessing" name="Marcar como &#39;procesando&#39;">
+      <bpmn:incoming>Flow_W1</bpmn:incoming>
+      <bpmn:outgoing>Flow_W2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_GenerateSign" name="Generar XML, Firmar y Agregar QR">
+      <bpmn:incoming>Flow_W2</bpmn:incoming>
+      <bpmn:outgoing>Flow_W3</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_SaveXML" name="Guardar XML localmente (de_output)">
+      <bpmn:incoming>Flow_W3</bpmn:incoming>
+      <bpmn:outgoing>Flow_W4</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_Strategy" name="¿Es Estrategia de Lote?">
+      <bpmn:incoming>Flow_W4</bpmn:incoming>
+      <bpmn:outgoing>Flow_W_Lote</bpmn:outgoing>
+      <bpmn:outgoing>Flow_W_Sync</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_SetWaiting" name="Estado: esperando_lote">
+      <bpmn:incoming>Flow_W_Lote</bpmn:incoming>
+      <bpmn:outgoing>Flow_W5</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_SendSync" name="Enviar Síncrono a SET">
+      <bpmn:incoming>Flow_W_Sync</bpmn:incoming>
+      <bpmn:outgoing>Flow_W6</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="EndEvent_WorkerXML" name="Espera de manager">
+      <bpmn:incoming>Flow_W5</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="EndEvent_WorkerSync" name="Proceso Síncrono Fin">
+      <bpmn:incoming>Flow_W6</bpmn:incoming>
+    </bpmn:endEvent>
+    
+    <bpmn:sequenceFlow id="Flow_W1" sourceRef="StartEvent_WorkerJob" targetRef="Task_SetProcessing" />
+    <bpmn:sequenceFlow id="Flow_W2" sourceRef="Task_SetProcessing" targetRef="Task_GenerateSign" />
+    <bpmn:sequenceFlow id="Flow_W3" sourceRef="Task_GenerateSign" targetRef="Task_SaveXML" />
+    <bpmn:sequenceFlow id="Flow_W4" sourceRef="Task_SaveXML" targetRef="Gateway_Strategy" />
+    <bpmn:sequenceFlow id="Flow_W_Lote" sourceRef="Gateway_Strategy" targetRef="Task_SetWaiting" name="Sí" />
+    <bpmn:sequenceFlow id="Flow_W_Sync" sourceRef="Gateway_Strategy" targetRef="Task_SendSync" name="No" />
+    <bpmn:sequenceFlow id="Flow_W5" sourceRef="Task_SetWaiting" targetRef="EndEvent_WorkerXML" />
+    <bpmn:sequenceFlow id="Flow_W6" sourceRef="Task_SendSync" targetRef="EndEvent_WorkerSync" />
+  </bpmn:process>
+
+  <bpmn:process id="Process_LotesManager" isExecutable="false">
+    <bpmn:startEvent id="StartEvent_TimerPack" name="Timer: 30s">
+      <bpmn:outgoing>Flow_L1</bpmn:outgoing>
+      <bpmn:timerEventDefinition />
+    </bpmn:startEvent>
+    <bpmn:task id="Task_CheckQty" name="Buscar esperando_lote y agrupar por Empresa">
+      <bpmn:incoming>Flow_L1</bpmn:incoming>
+      <bpmn:outgoing>Flow_L2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_PackCondition" name="¿Max Qty o Max Tiempo?">
+      <bpmn:incoming>Flow_L2</bpmn:incoming>
+      <bpmn:outgoing>Flow_LC1</bpmn:outgoing>
+      <bpmn:outgoing>Flow_LC2</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_PackXMLs" name="Armar paquete hasta 50 facturas (concatenar XMLs)">
+      <bpmn:incoming>Flow_LC1</bpmn:incoming>
+      <bpmn:outgoing>Flow_L3</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="EndEvent_NoPack" name="Esperar">
+      <bpmn:incoming>Flow_LC2</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:task id="Task_SendLote" name="Enviar Lote a SET">
+      <bpmn:incoming>Flow_L3</bpmn:incoming>
+      <bpmn:outgoing>Flow_L4</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_SaveLoteDb" name="Crear Lote BD y marcar facturas como &#39;enviado&#39;">
+      <bpmn:incoming>Flow_L4</bpmn:incoming>
+      <bpmn:outgoing>Flow_L5</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="EndEvent_PackFinish" name="Fin empaque">
+      <bpmn:incoming>Flow_L5</bpmn:incoming>
+    </bpmn:endEvent>
+    
+    <bpmn:sequenceFlow id="Flow_L1" sourceRef="StartEvent_TimerPack" targetRef="Task_CheckQty" />
+    <bpmn:sequenceFlow id="Flow_L2" sourceRef="Task_CheckQty" targetRef="Gateway_PackCondition" />
+    <bpmn:sequenceFlow id="Flow_LC1" sourceRef="Gateway_PackCondition" targetRef="Task_PackXMLs" name="Sí" />
+    <bpmn:sequenceFlow id="Flow_LC2" sourceRef="Gateway_PackCondition" targetRef="EndEvent_NoPack" name="No" />
+    <bpmn:sequenceFlow id="Flow_L3" sourceRef="Task_PackXMLs" targetRef="Task_SendLote" />
+    <bpmn:sequenceFlow id="Flow_L4" sourceRef="Task_SendLote" targetRef="Task_SaveLoteDb" />
+    <bpmn:sequenceFlow id="Flow_L5" sourceRef="Task_SaveLoteDb" targetRef="EndEvent_PackFinish" />
+
+    <bpmn:startEvent id="StartEvent_TimerQuery" name="Timer: 2min">
+      <bpmn:outgoing>Flow_Q1</bpmn:outgoing>
+      <bpmn:timerEventDefinition />
+    </bpmn:startEvent>
+    <bpmn:task id="Task_FindLotes" name="Buscar Lotes estado &#39;Enviado&#39;">
+      <bpmn:incoming>Flow_Q1</bpmn:incoming>
+      <bpmn:outgoing>Flow_Q2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_QueryLote" name="Consultar SET (consultaLote)">
+      <bpmn:incoming>Flow_Q2</bpmn:incoming>
+      <bpmn:outgoing>Flow_Q3</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_QueryResult" name="¿0362 Concluido?">
+      <bpmn:incoming>Flow_Q3</bpmn:incoming>
+      <bpmn:outgoing>Flow_Q4</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Q5</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_UpdateResult" name="Extraer resultados por CDC y Update DB Invoices">
+      <bpmn:incoming>Flow_Q4</bpmn:incoming>
+      <bpmn:outgoing>Flow_Q6</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="EndEvent_WaitQuery" name="Sigue procesando (0364)">
+      <bpmn:incoming>Flow_Q5</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="EndEvent_QueryDone" name="Fin Consulta">
+      <bpmn:incoming>Flow_Q6</bpmn:incoming>
+    </bpmn:endEvent>
+    
+    <bpmn:sequenceFlow id="Flow_Q1" sourceRef="StartEvent_TimerQuery" targetRef="Task_FindLotes" />
+    <bpmn:sequenceFlow id="Flow_Q2" sourceRef="Task_FindLotes" targetRef="Task_QueryLote" />
+    <bpmn:sequenceFlow id="Flow_Q3" sourceRef="Task_QueryLote" targetRef="Gateway_QueryResult" />
+    <bpmn:sequenceFlow id="Flow_Q4" sourceRef="Gateway_QueryResult" targetRef="Task_UpdateResult" name="Sí" />
+    <bpmn:sequenceFlow id="Flow_Q5" sourceRef="Gateway_QueryResult" targetRef="EndEvent_WaitQuery" name="No" />
+    <bpmn:sequenceFlow id="Flow_Q6" sourceRef="Task_UpdateResult" targetRef="EndEvent_QueryDone" />
+  </bpmn:process>
+
+  <bpmn:process id="Process_Cliente" isExecutable="false" />
+  <bpmn:process id="Process_SIFEN" isExecutable="false" />
+  
+  <!-- Diagram Layout (BPMNDiagram) -->
+  <bpmndi:BPMNDiagram id="BPMNDiagram_Sifen">
+    <bpmndi:BPMNPlane id="BPMNPlane_Sifen" bpmnElement="Collaboration_Sifen">
+      <bpmndi:BPMNShape id="Participant_API_di" bpmnElement="Participant_API" isHorizontal="true">
+        <dc:Bounds x="150" y="80" width="850" height="200" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_WorkerXML_di" bpmnElement="Participant_WorkerXML" isHorizontal="true">
+        <dc:Bounds x="150" y="300" width="950" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_LotesManager_di" bpmnElement="Participant_LotesManager" isHorizontal="true">
+        <dc:Bounds x="150" y="540" width="1050" height="400" />
+      </bpmndi:BPMNShape>
+      <!-- Sub-elements for API -->
+      <bpmndi:BPMNShape id="StartEvent_ApiReceives_di" bpmnElement="StartEvent_ApiReceives">
+        <dc:Bounds x="200" y="160" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Validations_di" bpmnElement="Task_Validations">
+        <dc:Bounds x="280" y="140" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SaveEncolado_di" bpmnElement="Task_SaveEncolado">
+        <dc:Bounds x="420" y="140" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_EnqueueJob_di" bpmnElement="Task_EnqueueJob">
+        <dc:Bounds x="560" y="140" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_ReturnAccepted_di" bpmnElement="Task_ReturnAccepted">
+        <dc:Bounds x="700" y="140" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Api_di" bpmnElement="EndEvent_Api">
+        <dc:Bounds x="850" y="160" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_1_di" bpmnElement="Flow_1">
+        <di:waypoint x="236" y="178" />
+        <di:waypoint x="280" y="178" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_2_di" bpmnElement="Flow_2">
+        <di:waypoint x="380" y="178" />
+        <di:waypoint x="420" y="178" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_3_di" bpmnElement="Flow_3">
+        <di:waypoint x="520" y="178" />
+        <di:waypoint x="560" y="178" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_4_di" bpmnElement="Flow_4">
+        <di:waypoint x="660" y="178" />
+        <di:waypoint x="700" y="178" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_5_di" bpmnElement="Flow_5">
+        <di:waypoint x="800" y="178" />
+        <di:waypoint x="850" y="178" />
+      </bpmndi:BPMNEdge>
+
+      <!-- WorkerXML -->
+      <bpmndi:BPMNShape id="StartEvent_WorkerJob_di" bpmnElement="StartEvent_WorkerJob">
+        <dc:Bounds x="200" y="380" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SetProcessing_di" bpmnElement="Task_SetProcessing">
+        <dc:Bounds x="280" y="360" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_GenerateSign_di" bpmnElement="Task_GenerateSign">
+        <dc:Bounds x="420" y="360" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SaveXML_di" bpmnElement="Task_SaveXML">
+        <dc:Bounds x="560" y="360" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Strategy_di" bpmnElement="Gateway_Strategy" isMarkerVisible="true">
+        <dc:Bounds x="700" y="375" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SetWaiting_di" bpmnElement="Task_SetWaiting">
+        <dc:Bounds x="800" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_WorkerXML_di" bpmnElement="EndEvent_WorkerXML">
+        <dc:Bounds x="950" y="330" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      
+      <bpmndi:BPMNEdge id="Flow_W1_di" bpmnElement="Flow_W1">
+        <di:waypoint x="236" y="398" />
+        <di:waypoint x="280" y="398" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_W2_di" bpmnElement="Flow_W2">
+        <di:waypoint x="380" y="398" />
+        <di:waypoint x="420" y="398" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_W3_di" bpmnElement="Flow_W3">
+        <di:waypoint x="520" y="398" />
+        <di:waypoint x="560" y="398" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_W4_di" bpmnElement="Flow_W4">
+        <di:waypoint x="660" y="400" />
+        <di:waypoint x="700" y="400" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_W_Lote_di" bpmnElement="Flow_W_Lote">
+        <di:waypoint x="725" y="375" />
+        <di:waypoint x="725" y="350" />
+        <di:waypoint x="800" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_W5_di" bpmnElement="Flow_W5">
+        <di:waypoint x="900" y="350" />
+        <di:waypoint x="950" y="350" />
+      </bpmndi:BPMNEdge>
+
+      <!-- WorkerLotes -->
+      <!-- Timer Pack -->
+      <bpmndi:BPMNShape id="StartEvent_TimerPack_di" bpmnElement="StartEvent_TimerPack">
+        <dc:Bounds x="200" y="580" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_CheckQty_di" bpmnElement="Task_CheckQty">
+        <dc:Bounds x="280" y="560" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_PackCondition_di" bpmnElement="Gateway_PackCondition" isMarkerVisible="true">
+        <dc:Bounds x="420" y="575" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_PackXMLs_di" bpmnElement="Task_PackXMLs">
+        <dc:Bounds x="520" y="560" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_NoPack_di" bpmnElement="EndEvent_NoPack">
+        <dc:Bounds x="427" y="660" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SendLote_di" bpmnElement="Task_SendLote">
+        <dc:Bounds x="670" y="560" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SaveLoteDb_di" bpmnElement="Task_SaveLoteDb">
+        <dc:Bounds x="820" y="560" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_PackFinish_di" bpmnElement="EndEvent_PackFinish">
+        <dc:Bounds x="970" y="582" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <!-- Timer Query -->
+      <bpmndi:BPMNShape id="StartEvent_TimerQuery_di" bpmnElement="StartEvent_TimerQuery">
+        <dc:Bounds x="200" y="780" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_FindLotes_di" bpmnElement="Task_FindLotes">
+        <dc:Bounds x="280" y="760" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_QueryLote_di" bpmnElement="Task_QueryLote">
+        <dc:Bounds x="420" y="760" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_QueryResult_di" bpmnElement="Gateway_QueryResult" isMarkerVisible="true">
+        <dc:Bounds x="560" y="775" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_UpdateResult_di" bpmnElement="Task_UpdateResult">
+        <dc:Bounds x="670" y="760" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_WaitQuery_di" bpmnElement="EndEvent_WaitQuery">
+        <dc:Bounds x="567" y="860" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_QueryDone_di" bpmnElement="EndEvent_QueryDone">
+        <dc:Bounds x="820" y="782" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      
+      <!-- Flow Pack -->
+      <bpmndi:BPMNEdge id="Flow_L1_di" bpmnElement="Flow_L1">
+        <di:waypoint x="236" y="598" />
+        <di:waypoint x="280" y="598" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_L2_di" bpmnElement="Flow_L2">
+        <di:waypoint x="380" y="600" />
+        <di:waypoint x="420" y="600" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_LC1_di" bpmnElement="Flow_LC1">
+        <di:waypoint x="470" y="600" />
+        <di:waypoint x="520" y="600" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_LC2_di" bpmnElement="Flow_LC2">
+        <di:waypoint x="445" y="625" />
+        <di:waypoint x="445" y="660" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_L3_di" bpmnElement="Flow_L3">
+        <di:waypoint x="620" y="600" />
+        <di:waypoint x="670" y="600" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_L4_di" bpmnElement="Flow_L4">
+        <di:waypoint x="770" y="600" />
+        <di:waypoint x="820" y="600" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_L5_di" bpmnElement="Flow_L5">
+        <di:waypoint x="920" y="600" />
+        <di:waypoint x="970" y="600" />
+      </bpmndi:BPMNEdge>
+      
+      <!-- Flow Query -->
+      <bpmndi:BPMNEdge id="Flow_Q1_di" bpmnElement="Flow_Q1">
+        <di:waypoint x="236" y="798" />
+        <di:waypoint x="280" y="798" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Q2_di" bpmnElement="Flow_Q2">
+        <di:waypoint x="380" y="800" />
+        <di:waypoint x="420" y="800" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Q3_di" bpmnElement="Flow_Q3">
+        <di:waypoint x="520" y="800" />
+        <di:waypoint x="560" y="800" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Q4_di" bpmnElement="Flow_Q4">
+        <di:waypoint x="610" y="800" />
+        <di:waypoint x="670" y="800" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Q5_di" bpmnElement="Flow_Q5">
+        <di:waypoint x="585" y="825" />
+        <di:waypoint x="585" y="860" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Q6_di" bpmnElement="Flow_Q6">
+        <di:waypoint x="770" y="800" />
+        <di:waypoint x="820" y="800" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
